@@ -15,6 +15,15 @@ const { previewCachePath, ensurePreview } = require('./preview');
 const projectRoot = path.resolve(__dirname, '..');
 const config = loadConfig(projectRoot);
 
+function makePrefixLike(rawPrefix) {
+  const normalized = normalizeRelPath(rawPrefix || '');
+  if (!normalized) {
+    return null;
+  }
+  const normalizedSlash = normalized.replace(/\\/g, '/');
+  return `${normalizedSlash}/%`;
+}
+
 function ensureDir(targetPath) {
   if (!targetPath) {
     return;
@@ -143,6 +152,11 @@ fastify.get('/api/list', async (request, reply) => {
     mime: row.mime,
     ext: row.ext,
     isDir: Boolean(row.is_dir),
+    title: row.title || null,
+    artist: row.artist || null,
+    album: row.album || null,
+    duration: row.duration || null,
+    albumKey: row.album_key || null,
   }));
   return { items, total };
 });
@@ -162,14 +176,25 @@ fastify.get('/api/search', async (request, reply) => {
   const limit = Math.min(parseInt(request.query.limit || '50', 10) || 50, 200);
   const offset = Math.max(parseInt(request.query.offset || '0', 10) || 0, 0);
   const like = `%${query}%`;
+  const prefixLike = makePrefixLike(request.query.pathPrefix);
   let rows = [];
   let total = 0;
   if (type === 'photos') {
-    rows = db.searchPhotos.all(rootId, like, limit, offset);
-    total = db.countSearchPhotos.get(rootId, like)?.count || 0;
+    if (prefixLike) {
+      rows = db.searchPhotosByPrefix.all(rootId, like, prefixLike, limit, offset);
+      total = db.countSearchPhotosByPrefix.get(rootId, like, prefixLike)?.count || 0;
+    } else {
+      rows = db.searchPhotos.all(rootId, like, limit, offset);
+      total = db.countSearchPhotos.get(rootId, like)?.count || 0;
+    }
   } else if (type === 'music') {
-    rows = db.searchMusic.all(rootId, like, like, like, like, limit, offset);
-    total = db.countSearchMusic.get(rootId, like, like, like, like)?.count || 0;
+    if (prefixLike) {
+      rows = db.searchMusicByPrefix.all(rootId, like, like, like, like, prefixLike, limit, offset);
+      total = db.countSearchMusicByPrefix.get(rootId, like, like, like, like, prefixLike)?.count || 0;
+    } else {
+      rows = db.searchMusic.all(rootId, like, like, like, like, limit, offset);
+      total = db.countSearchMusic.get(rootId, like, like, like, like)?.count || 0;
+    }
   } else {
     rows = db.searchByName.all(rootId, like, limit, offset);
     total = db.countSearch.get(rootId, like)?.count || 0;
@@ -202,15 +227,26 @@ fastify.get('/api/media', async (request, reply) => {
   const type = (request.query.type || '').toLowerCase();
   const limit = Math.min(parseInt(request.query.limit || '50', 10) || 50, 200);
   const offset = Math.max(parseInt(request.query.offset || '0', 10) || 0, 0);
+  const prefixLike = makePrefixLike(request.query.pathPrefix);
 
   let rows = [];
   let total = 0;
   if (type === 'photos') {
-    rows = db.listPhotos.all(rootId, limit, offset);
-    total = db.countPhotos.get(rootId)?.count || 0;
+    if (prefixLike) {
+      rows = db.listPhotosByPrefix.all(rootId, prefixLike, limit, offset);
+      total = db.countPhotosByPrefix.get(rootId, prefixLike)?.count || 0;
+    } else {
+      rows = db.listPhotos.all(rootId, limit, offset);
+      total = db.countPhotos.get(rootId)?.count || 0;
+    }
   } else if (type === 'music') {
-    rows = db.listMusic.all(rootId, limit, offset);
-    total = db.countMusic.get(rootId)?.count || 0;
+    if (prefixLike) {
+      rows = db.listMusicByPrefix.all(rootId, prefixLike, limit, offset);
+      total = db.countMusicByPrefix.get(rootId, prefixLike)?.count || 0;
+    } else {
+      rows = db.listMusic.all(rootId, limit, offset);
+      total = db.countMusic.get(rootId)?.count || 0;
+    }
   } else {
     reply.code(400);
     return { error: 'Invalid media type' };
@@ -243,8 +279,13 @@ fastify.get('/api/music/albums', async (request, reply) => {
   }
   const limit = Math.min(parseInt(request.query.limit || '50', 10) || 50, 200);
   const offset = Math.max(parseInt(request.query.offset || '0', 10) || 0, 0);
-  const rows = db.listAlbums.all(rootId, limit, offset);
-  const total = db.countAlbums.get(rootId)?.count || 0;
+  const prefixLike = makePrefixLike(request.query.pathPrefix);
+  const rows = prefixLike
+    ? db.listAlbumsByPrefix.all(rootId, prefixLike, limit, offset)
+    : db.listAlbums.all(rootId, limit, offset);
+  const total = prefixLike
+    ? db.countAlbumsByPrefix.get(rootId, prefixLike)?.count || 0
+    : db.countAlbums.get(rootId)?.count || 0;
   const items = rows.map((row) => {
     const art = row.album_key ? db.getAlbumArt.get(row.album_key) : null;
     return {
@@ -268,8 +309,13 @@ fastify.get('/api/music/artists', async (request, reply) => {
   }
   const limit = Math.min(parseInt(request.query.limit || '50', 10) || 50, 200);
   const offset = Math.max(parseInt(request.query.offset || '0', 10) || 0, 0);
-  const rows = db.listArtists.all(rootId, limit, offset);
-  const total = db.countArtists.get(rootId)?.count || 0;
+  const prefixLike = makePrefixLike(request.query.pathPrefix);
+  const rows = prefixLike
+    ? db.listArtistsByPrefix.all(rootId, prefixLike, limit, offset)
+    : db.listArtists.all(rootId, limit, offset);
+  const total = prefixLike
+    ? db.countArtistsByPrefix.get(rootId, prefixLike)?.count || 0
+    : db.countArtists.get(rootId)?.count || 0;
   const items = rows.map((row) => ({
     artist: row.artist || 'Unknown Artist',
     tracks: row.tracks,
@@ -287,7 +333,10 @@ fastify.get('/api/music/album', async (request, reply) => {
     reply.code(400);
     return { error: 'Invalid request' };
   }
-  const rows = db.listAlbumTracks.all(rootId, albumKey);
+  const prefixLike = makePrefixLike(request.query.pathPrefix);
+  const rows = prefixLike
+    ? db.listAlbumTracksByPrefix.all(rootId, albumKey, prefixLike)
+    : db.listAlbumTracks.all(rootId, albumKey);
   const items = rows.map((row) => ({
     path: row.rel_path,
     name: row.name,
@@ -313,7 +362,10 @@ fastify.get('/api/music/artist', async (request, reply) => {
     reply.code(400);
     return { error: 'Invalid request' };
   }
-  const rows = db.listArtistTracks.all(rootId, artist);
+  const prefixLike = makePrefixLike(request.query.pathPrefix);
+  const rows = prefixLike
+    ? db.listArtistTracksByPrefix.all(rootId, artist, prefixLike)
+    : db.listArtistTracks.all(rootId, artist);
   const items = rows.map((row) => ({
     path: row.rel_path,
     name: row.name,
@@ -352,8 +404,10 @@ fastify.get('/api/album-art', async (request, reply) => {
   return reply.send(fs.createReadStream(art.path));
 });
 
-fastify.post('/api/scan', async () => {
-  await indexer.scanAll();
+fastify.post('/api/scan', async (request) => {
+  const mode = request.body?.mode || request.query?.mode || 'incremental';
+  const forceHash = mode === 'full' || mode === 'rehash';
+  await indexer.scanAll({ forceHash });
   return { ok: true, status: indexer.getStatus() };
 });
 

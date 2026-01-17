@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import { useApi } from '../composables/useApi';
+import MiniPlayer from '../components/MiniPlayer.vue';
 
 const props = defineProps({
   roots: {
@@ -51,6 +52,13 @@ const hasMore = computed(() => {
   }
   return items.value.length < listTotal.value;
 });
+const audioQueue = computed(() => displayItems.value.filter((item) => isAudio(item)));
+const selectedAudioTrack = computed(() =>
+  activeItem.value && isAudio(activeItem.value) ? activeItem.value : null
+);
+const modalAudioTrack = computed(() =>
+  modalItem.value && isAudio(modalItem.value) ? modalItem.value : null
+);
 
 const breadcrumbs = computed(() => {
   if (!props.currentRoot) {
@@ -227,12 +235,38 @@ async function openItem(item) {
 
 function openModal(item) {
   modalItem.value = item;
+  selectedPaths.value = [item.path];
   zoomLevel.value = 1;
   modalOpen.value = true;
 }
 
 function closeModal() {
   modalOpen.value = false;
+}
+
+function setModalItem(item) {
+  if (!item) {
+    return;
+  }
+  modalItem.value = item;
+  selectedPaths.value = [item.path];
+  zoomLevel.value = 1;
+}
+
+function navigateModal(delta) {
+  const list = displayItems.value.filter((entry) => isMedia(entry));
+  if (!modalItem.value || !list.length) {
+    return;
+  }
+  const index = list.findIndex((entry) => entry.path === modalItem.value.path);
+  if (index < 0) {
+    return;
+  }
+  const nextIndex = index + delta;
+  if (nextIndex < 0 || nextIndex >= list.length) {
+    return;
+  }
+  setModalItem(list[nextIndex]);
 }
 
 function zoomIn() {
@@ -267,6 +301,17 @@ async function handleItemClick(item, event) {
     return;
   }
   toggleSelection(item, event);
+}
+
+function handlePlayerSelect(track) {
+  if (!track?.path) {
+    return;
+  }
+  selectedPaths.value = [track.path];
+}
+
+function handleModalPlayerSelect(track) {
+  setModalItem(track);
 }
 
 function goToCrumb(crumb) {
@@ -373,6 +418,10 @@ function handleKey(event) {
   }
   if (event.key === 'Escape') {
     closeModal();
+  } else if (event.key === 'ArrowRight') {
+    navigateModal(1);
+  } else if (event.key === 'ArrowLeft') {
+    navigateModal(-1);
   } else if (event.key === '+' || event.key === '=') {
     zoomIn();
   } else if (event.key === '-') {
@@ -542,7 +591,15 @@ function handleKey(event) {
         :style="{ transform: `scale(${zoomLevel})` }"
       />
       <video v-else-if="isVideo(modalItem)" :src="fileUrl(rootId, modalItem.path)" controls></video>
-      <audio v-else-if="isAudio(modalItem)" :src="fileUrl(rootId, modalItem.path)" controls></audio>
+      <MiniPlayer
+        v-else-if="isAudio(modalItem)"
+        :tracks="audioQueue"
+        :selected-track="modalAudioTrack"
+        :root-id="rootId"
+        :auto-play="true"
+        variant="embedded"
+        @select="handleModalPlayerSelect"
+      />
       <div v-else class="tile-fallback"><i class="fa-solid fa-file"></i></div>
     </div>
 

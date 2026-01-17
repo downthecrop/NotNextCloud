@@ -12,7 +12,7 @@ const authReady = ref(false);
 const roots = ref([]);
 const currentRoot = ref(null);
 const currentView = ref('files');
-const musicNav = ref({ mode: 'songs', albumKey: null, artist: null });
+const musicNav = ref({ mode: 'songs', albumKey: null, artist: null, playlistId: null });
 const settingsOpen = ref(false);
 const pageSize = ref(parseInt(localStorage.getItem('localCloudPageSize') || '50', 10) || 50);
 const status = ref({ lastScanAt: null, scanInProgress: false, scanIntervalSeconds: 0 });
@@ -114,7 +114,7 @@ function onPageSizeChange(value) {
 function parseHash() {
   const raw = window.location.hash.replace(/^#/, '');
   if (!raw) {
-    return { view: 'files', music: { mode: 'songs', albumKey: null, artist: null } };
+    return { view: 'files', music: { mode: 'songs', albumKey: null, artist: null, playlistId: null } };
   }
   const parts = raw.split('/').filter(Boolean);
   const view = parts[0];
@@ -122,19 +122,23 @@ function parseHash() {
     let mode = 'songs';
     let albumKey = null;
     let artist = null;
+    let playlistId = null;
     if (parts[1] === 'albums') {
       mode = 'albums';
       albumKey = parts[2] ? decodeURIComponent(parts[2]) : null;
     } else if (parts[1] === 'artists') {
       mode = 'artists';
       artist = parts[2] ? decodeURIComponent(parts[2]) : null;
+    } else if (parts[1] === 'playlists') {
+      mode = 'playlists';
+      playlistId = parts[2] ? decodeURIComponent(parts[2]) : null;
     }
-    return { view, music: { mode, albumKey, artist } };
+    return { view, music: { mode, albumKey, artist, playlistId } };
   }
   if (view === 'photos') {
-    return { view: 'photos', music: { mode: 'songs', albumKey: null, artist: null } };
+    return { view: 'photos', music: { mode: 'songs', albumKey: null, artist: null, playlistId: null } };
   }
-  return { view: 'files', music: { mode: 'songs', albumKey: null, artist: null } };
+  return { view: 'files', music: { mode: 'songs', albumKey: null, artist: null, playlistId: null } };
 }
 
 function buildHash(view, music) {
@@ -149,6 +153,11 @@ function buildHash(view, music) {
       return music?.artist
         ? `#music/artists/${encodeURIComponent(music.artist)}`
         : '#music/artists';
+    }
+    if (mode === 'playlists') {
+      return music?.playlistId
+        ? `#music/playlists/${encodeURIComponent(music.playlistId)}`
+        : '#music/playlists';
     }
     return '#music';
   }

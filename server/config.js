@@ -36,6 +36,8 @@ function loadConfig(projectRoot) {
     dbPath: resolvePath(projectRoot, config.dbPath || './data/files.db'),
     previewDir: resolvePath(projectRoot, config.previewDir || './data/previews'),
     scanIntervalSeconds: config.scanIntervalSeconds || 60,
+    hashAlgorithm: typeof config.hashAlgorithm === 'string' ? config.hashAlgorithm : 'sha256',
+    hashFiles: config.hashFiles !== false,
     devMode: Boolean(config.devMode),
     roots: resolvedRoots,
     auth: {

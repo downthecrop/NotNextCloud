@@ -47,19 +47,25 @@ function initDb(dbPath) {
   addColumn('album', 'TEXT');
   addColumn('duration', 'REAL');
   addColumn('album_key', 'TEXT');
+  addColumn('content_hash', 'TEXT');
+  addColumn('hash_alg', 'TEXT');
+  addColumn('inode', 'INTEGER');
+  addColumn('device', 'INTEGER');
 
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_entries_root_album ON entries (root_id, album_key);
     CREATE INDEX IF NOT EXISTS idx_entries_root_artist ON entries (root_id, artist);
+    CREATE INDEX IF NOT EXISTS idx_entries_hash ON entries (content_hash);
+    CREATE INDEX IF NOT EXISTS idx_entries_root_rel ON entries (root_id, rel_path);
   `);
 
   const upsertEntry = db.prepare(`
     INSERT INTO entries (
       root_id, rel_path, parent, name, ext, size, mtime, mime, is_dir, scan_id,
-      title, artist, album, duration, album_key
+      title, artist, album, duration, album_key, content_hash, hash_alg, inode, device
     ) VALUES (
       @root_id, @rel_path, @parent, @name, @ext, @size, @mtime, @mime, @is_dir, @scan_id,
-      @title, @artist, @album, @duration, @album_key
+      @title, @artist, @album, @duration, @album_key, @content_hash, @hash_alg, @inode, @device
     )
     ON CONFLICT(root_id, rel_path) DO UPDATE SET
       parent = excluded.parent,
@@ -74,7 +80,11 @@ function initDb(dbPath) {
       artist = excluded.artist,
       album = excluded.album,
       duration = excluded.duration,
-      album_key = excluded.album_key
+      album_key = excluded.album_key,
+      content_hash = excluded.content_hash,
+      hash_alg = excluded.hash_alg,
+      inode = excluded.inode,
+      device = excluded.device
   `);
 
   const listChildren = db.prepare(`
@@ -123,6 +133,26 @@ function initDb(dbPath) {
       AND (mime LIKE 'image/%' OR mime LIKE 'video/%')
   `);
 
+  const listPhotosByPrefix = db.prepare(`
+    SELECT root_id, rel_path, parent, name, ext, size, mtime, mime, is_dir, title, artist, album, duration, album_key
+    FROM entries
+    WHERE root_id = ?
+      AND is_dir = 0
+      AND (mime LIKE 'image/%' OR mime LIKE 'video/%')
+      AND rel_path LIKE ?
+    ORDER BY mtime DESC, name COLLATE NOCASE
+    LIMIT ? OFFSET ?
+  `);
+
+  const countPhotosByPrefix = db.prepare(`
+    SELECT COUNT(*) as count
+    FROM entries
+    WHERE root_id = ?
+      AND is_dir = 0
+      AND (mime LIKE 'image/%' OR mime LIKE 'video/%')
+      AND rel_path LIKE ?
+  `);
+
   const listMusic = db.prepare(`
     SELECT root_id, rel_path, parent, name, ext, size, mtime, mime, is_dir, title, artist, album, duration, album_key
     FROM entries
@@ -141,6 +171,26 @@ function initDb(dbPath) {
       AND mime LIKE 'audio/%'
   `);
 
+  const listMusicByPrefix = db.prepare(`
+    SELECT root_id, rel_path, parent, name, ext, size, mtime, mime, is_dir, title, artist, album, duration, album_key
+    FROM entries
+    WHERE root_id = ?
+      AND is_dir = 0
+      AND mime LIKE 'audio/%'
+      AND rel_path LIKE ?
+    ORDER BY mtime DESC, name COLLATE NOCASE
+    LIMIT ? OFFSET ?
+  `);
+
+  const countMusicByPrefix = db.prepare(`
+    SELECT COUNT(*) as count
+    FROM entries
+    WHERE root_id = ?
+      AND is_dir = 0
+      AND mime LIKE 'audio/%'
+      AND rel_path LIKE ?
+  `);
+
   const searchPhotos = db.prepare(`
     SELECT root_id, rel_path, parent, name, ext, size, mtime, mime, is_dir, title, artist, album, duration, album_key
     FROM entries
@@ -157,6 +207,26 @@ function initDb(dbPath) {
     WHERE root_id = ?
       AND name LIKE ?
       AND (mime LIKE 'image/%' OR mime LIKE 'video/%')
+  `);
+
+  const searchPhotosByPrefix = db.prepare(`
+    SELECT root_id, rel_path, parent, name, ext, size, mtime, mime, is_dir, title, artist, album, duration, album_key
+    FROM entries
+    WHERE root_id = ?
+      AND name LIKE ?
+      AND (mime LIKE 'image/%' OR mime LIKE 'video/%')
+      AND rel_path LIKE ?
+    ORDER BY mtime DESC, name COLLATE NOCASE
+    LIMIT ? OFFSET ?
+  `);
+
+  const countSearchPhotosByPrefix = db.prepare(`
+    SELECT COUNT(*) as count
+    FROM entries
+    WHERE root_id = ?
+      AND name LIKE ?
+      AND (mime LIKE 'image/%' OR mime LIKE 'video/%')
+      AND rel_path LIKE ?
   `);
 
   const searchMusic = db.prepare(`
@@ -187,6 +257,36 @@ function initDb(dbPath) {
       AND mime LIKE 'audio/%'
   `);
 
+  const searchMusicByPrefix = db.prepare(`
+    SELECT root_id, rel_path, parent, name, ext, size, mtime, mime, is_dir, title, artist, album, duration, album_key
+    FROM entries
+    WHERE root_id = ?
+      AND (
+        name LIKE ?
+        OR title LIKE ?
+        OR artist LIKE ?
+        OR album LIKE ?
+      )
+      AND mime LIKE 'audio/%'
+      AND rel_path LIKE ?
+    ORDER BY mtime DESC, name COLLATE NOCASE
+    LIMIT ? OFFSET ?
+  `);
+
+  const countSearchMusicByPrefix = db.prepare(`
+    SELECT COUNT(*) as count
+    FROM entries
+    WHERE root_id = ?
+      AND (
+        name LIKE ?
+        OR title LIKE ?
+        OR artist LIKE ?
+        OR album LIKE ?
+      )
+      AND mime LIKE 'audio/%'
+      AND rel_path LIKE ?
+  `);
+
   const listAlbums = db.prepare(`
     SELECT album_key, album, artist, COUNT(*) as tracks, MAX(mtime) as latest
     FROM entries
@@ -206,6 +306,31 @@ function initDb(dbPath) {
       WHERE root_id = ?
         AND is_dir = 0
         AND mime LIKE 'audio/%'
+      GROUP BY album_key
+    ) AS albums
+  `);
+
+  const listAlbumsByPrefix = db.prepare(`
+    SELECT album_key, album, artist, COUNT(*) as tracks, MAX(mtime) as latest
+    FROM entries
+    WHERE root_id = ?
+      AND is_dir = 0
+      AND mime LIKE 'audio/%'
+      AND rel_path LIKE ?
+    GROUP BY album_key, album, artist
+    ORDER BY latest DESC, album COLLATE NOCASE
+    LIMIT ? OFFSET ?
+  `);
+
+  const countAlbumsByPrefix = db.prepare(`
+    SELECT COUNT(*) as count
+    FROM (
+      SELECT album_key
+      FROM entries
+      WHERE root_id = ?
+        AND is_dir = 0
+        AND mime LIKE 'audio/%'
+        AND rel_path LIKE ?
       GROUP BY album_key
     ) AS albums
   `);
@@ -233,6 +358,31 @@ function initDb(dbPath) {
     ) AS artists
   `);
 
+  const listArtistsByPrefix = db.prepare(`
+    SELECT artist, COUNT(*) as tracks, COUNT(DISTINCT album_key) as albums, MAX(mtime) as latest
+    FROM entries
+    WHERE root_id = ?
+      AND is_dir = 0
+      AND mime LIKE 'audio/%'
+      AND rel_path LIKE ?
+    GROUP BY artist
+    ORDER BY latest DESC, artist COLLATE NOCASE
+    LIMIT ? OFFSET ?
+  `);
+
+  const countArtistsByPrefix = db.prepare(`
+    SELECT COUNT(*) as count
+    FROM (
+      SELECT artist
+      FROM entries
+      WHERE root_id = ?
+        AND is_dir = 0
+        AND mime LIKE 'audio/%'
+        AND rel_path LIKE ?
+      GROUP BY artist
+    ) AS artists
+  `);
+
   const listAlbumTracks = db.prepare(`
     SELECT root_id, rel_path, parent, name, ext, size, mtime, mime, is_dir,
       title, artist, album, duration, album_key
@@ -244,6 +394,18 @@ function initDb(dbPath) {
     ORDER BY name COLLATE NOCASE
   `);
 
+  const listAlbumTracksByPrefix = db.prepare(`
+    SELECT root_id, rel_path, parent, name, ext, size, mtime, mime, is_dir,
+      title, artist, album, duration, album_key
+    FROM entries
+    WHERE root_id = ?
+      AND album_key = ?
+      AND is_dir = 0
+      AND mime LIKE 'audio/%'
+      AND rel_path LIKE ?
+    ORDER BY name COLLATE NOCASE
+  `);
+
   const listArtistTracks = db.prepare(`
     SELECT root_id, rel_path, parent, name, ext, size, mtime, mime, is_dir,
       title, artist, album, duration, album_key
@@ -252,6 +414,18 @@ function initDb(dbPath) {
       AND artist = ?
       AND is_dir = 0
       AND mime LIKE 'audio/%'
+    ORDER BY album COLLATE NOCASE, name COLLATE NOCASE
+  `);
+
+  const listArtistTracksByPrefix = db.prepare(`
+    SELECT root_id, rel_path, parent, name, ext, size, mtime, mime, is_dir,
+      title, artist, album, duration, album_key
+    FROM entries
+    WHERE root_id = ?
+      AND artist = ?
+      AND is_dir = 0
+      AND mime LIKE 'audio/%'
+      AND rel_path LIKE ?
     ORDER BY album COLLATE NOCASE, name COLLATE NOCASE
   `);
 
@@ -272,8 +446,15 @@ function initDb(dbPath) {
   `);
 
   const getEntry = db.prepare(`
-    SELECT root_id, rel_path, parent, name, ext, size, mtime, mime, is_dir, title, artist, album, duration, album_key
+    SELECT root_id, rel_path, parent, name, ext, size, mtime, mime, is_dir,
+      title, artist, album, duration, album_key, content_hash, hash_alg, inode, device
     FROM entries
+    WHERE root_id = ? AND rel_path = ?
+  `);
+
+  const touchEntry = db.prepare(`
+    UPDATE entries
+    SET scan_id = ?
     WHERE root_id = ? AND rel_path = ?
   `);
 
@@ -291,21 +472,36 @@ function initDb(dbPath) {
     countSearch,
     listPhotos,
     countPhotos,
+    listPhotosByPrefix,
+    countPhotosByPrefix,
     listMusic,
     countMusic,
+    listMusicByPrefix,
+    countMusicByPrefix,
     searchPhotos,
     countSearchPhotos,
+    searchPhotosByPrefix,
+    countSearchPhotosByPrefix,
     searchMusic,
     countSearchMusic,
+    searchMusicByPrefix,
+    countSearchMusicByPrefix,
     listAlbums,
     countAlbums,
+    listAlbumsByPrefix,
+    countAlbumsByPrefix,
     listArtists,
     countArtists,
+    listArtistsByPrefix,
+    countArtistsByPrefix,
     listAlbumTracks,
+    listAlbumTracksByPrefix,
     listArtistTracks,
+    listArtistTracksByPrefix,
     upsertAlbumArt,
     getAlbumArt,
     getEntry,
+    touchEntry,
     cleanupOld,
   };
 }

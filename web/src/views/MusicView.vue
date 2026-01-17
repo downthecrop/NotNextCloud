@@ -1,6 +1,7 @@
 <script setup>
-import { ref, computed, watch, onMounted, nextTick } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import { useApi } from '../composables/useApi';
+import MiniPlayer from '../components/MiniPlayer.vue';
 
 const props = defineProps({
   roots: {
@@ -17,7 +18,7 @@ const props = defineProps({
   },
   navState: {
     type: Object,
-    default: () => ({ mode: 'songs', albumKey: null, artist: null }),
+    default: () => ({ mode: 'songs', albumKey: null, artist: null, playlistId: null }),
   },
   onSelectRoot: {
     type: Function,
@@ -50,15 +51,14 @@ const error = ref('');
 const selectedTrack = ref(null);
 const selectedAlbum = ref(null);
 const selectedArtist = ref(null);
-const albumArtOk = ref(true);
+const playlists = ref([]);
+const selectedPlaylistId = ref(null);
+const draftCounter = ref(1);
+const contextMenu = ref({ open: false, x: 0, y: 0, track: null });
+const musicPins = ref([]);
+const activePin = ref(null);
 const albumTracks = ref([]);
 const artistTracks = ref([]);
-const audioRef = ref(null);
-const currentTime = ref(0);
-const duration = ref(0);
-const isPlaying = ref(false);
-const volume = ref(0.8);
-const muted = ref(false);
 const sentinel = ref(null);
 let observer = null;
 
@@ -72,22 +72,11 @@ const queue = computed(() => {
   if (mode.value === 'albums') {
     return albumTracks.value;
   }
+  if (mode.value === 'playlists') {
+    return playlistTracks.value;
+  }
   return artistTracks.value;
 });
-const currentIndex = computed(() => {
-  if (!selectedTrack.value) {
-    return -1;
-  }
-  return queue.value.findIndex((item) => item.path === selectedTrack.value.path);
-});
-const effectiveDuration = computed(() => {
-  const fallback = selectedTrack.value?.duration || 0;
-  const current = duration.value || 0;
-  return current > 0 ? current : fallback;
-});
-const seekMax = computed(() =>
-  Number.isFinite(effectiveDuration.value) && effectiveDuration.value > 0 ? effectiveDuration.value : 0
-);
 const filteredAlbums = computed(() => {
   if (!isSearchMode.value) {
     return albums.value;
@@ -107,13 +96,36 @@ const filteredArtists = computed(() => {
   const query = searchQuery.value.trim().toLowerCase();
   return artists.value.filter((artist) => artist.artist?.toLowerCase().includes(query));
 });
+const isAlbumDetail = computed(() => mode.value === 'albums' && selectedAlbum.value);
+const selectedPlaylist = computed(
+  () => playlists.value.find((playlist) => playlist.id === selectedPlaylistId.value) || null
+);
+const playlistTracks = computed(() => selectedPlaylist.value?.tracks || []);
+const isPlaylistDetail = computed(() => mode.value === 'playlists' && selectedPlaylist.value);
+const activePinPath = computed(() => activePin.value?.path || '');
+const albumTrackCount = computed(() => {
+  if (!selectedAlbum.value) {
+    return 0;
+  }
+  const fromAlbum = Number(selectedAlbum.value.tracks);
+  if (Number.isFinite(fromAlbum) && fromAlbum > 0) {
+    return fromAlbum;
+  }
+  return albumTracks.value.length;
+});
 
 const hasMore = computed(() => {
   if (mode.value === 'songs') {
     return displaySongs.value.length < (isSearchMode.value ? searchTotal.value : total.value);
   }
   if (mode.value === 'albums') {
+    if (selectedAlbum.value) {
+      return false;
+    }
     return albums.value.length < albumsTotal.value;
+  }
+  if (mode.value === 'playlists') {
+    return false;
   }
   return artists.value.length < artistsTotal.value;
 });
@@ -140,129 +152,6 @@ function trackAlbum(item) {
   return item.album || 'Unknown Album';
 }
 
-function formatTime(value) {
-  if (!value && value !== 0) {
-    return '--:--';
-  }
-  const totalSeconds = Math.floor(value);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
-}
-
-function togglePlay() {
-  if (!audioRef.value) {
-    return;
-  }
-  if (audioRef.value.paused) {
-    audioRef.value.play().catch(() => {});
-  } else {
-    audioRef.value.pause();
-  }
-}
-
-function playNext() {
-  const list = queue.value;
-  if (!list.length) {
-    return;
-  }
-  if (currentIndex.value < 0) {
-    selectTrack(list[0]);
-    return;
-  }
-  const nextIndex = currentIndex.value + 1;
-  if (nextIndex < list.length) {
-    selectTrack(list[nextIndex]);
-  }
-}
-
-function playPrev() {
-  const list = queue.value;
-  if (!list.length) {
-    return;
-  }
-  if (currentTime.value > 3 && audioRef.value) {
-    audioRef.value.currentTime = 0;
-    return;
-  }
-  const prevIndex = currentIndex.value - 1;
-  if (prevIndex >= 0) {
-    selectTrack(list[prevIndex]);
-    return;
-  }
-  if (audioRef.value) {
-    audioRef.value.currentTime = 0;
-  }
-}
-
-function onSeek(event) {
-  if (!audioRef.value) {
-    return;
-  }
-  const nextValue = parseFloat(event.target.value || '0');
-  audioRef.value.currentTime = nextValue;
-  currentTime.value = nextValue;
-}
-
-function onTimeUpdate() {
-  if (!audioRef.value) {
-    return;
-  }
-  currentTime.value = audioRef.value.currentTime || 0;
-}
-
-function onLoadedMetadata() {
-  if (!audioRef.value) {
-    return;
-  }
-  const nextDuration = audioRef.value.duration;
-  duration.value = Number.isFinite(nextDuration) ? nextDuration : duration.value;
-  audioRef.value.volume = volume.value;
-  audioRef.value.muted = muted.value;
-}
-
-function onPlay() {
-  isPlaying.value = true;
-}
-
-function onPause() {
-  isPlaying.value = false;
-}
-
-function onEnded() {
-  isPlaying.value = false;
-  playNext();
-}
-
-function onDurationChange() {
-  if (!audioRef.value) {
-    return;
-  }
-  const nextDuration = audioRef.value.duration;
-  duration.value = Number.isFinite(nextDuration) ? nextDuration : duration.value;
-}
-
-function onVolumeInput(event) {
-  const nextValue = parseFloat(event.target.value || '0');
-  volume.value = nextValue;
-  if (audioRef.value) {
-    audioRef.value.volume = nextValue;
-  }
-  if (nextValue > 0 && muted.value) {
-    muted.value = false;
-    if (audioRef.value) {
-      audioRef.value.muted = false;
-    }
-  }
-}
-
-function toggleMute() {
-  muted.value = !muted.value;
-  if (audioRef.value) {
-    audioRef.value.muted = muted.value;
-  }
-}
-
 async function loadTracks({ reset = true } = {}) {
   if (!props.currentRoot) {
     return;
@@ -276,9 +165,10 @@ async function loadTracks({ reset = true } = {}) {
   error.value = '';
   try {
     const pageOffset = reset ? 0 : offset.value;
+    const pathPrefix = activePinPath.value ? `&pathPrefix=${encodeURIComponent(activePinPath.value)}` : '';
     const res = await apiFetch(
       `/api/media?root=${encodeURIComponent(props.currentRoot.id)}` +
-        `&type=music&limit=${props.pageSize}&offset=${pageOffset}`
+        `&type=music&limit=${props.pageSize}&offset=${pageOffset}${pathPrefix}`
     );
     if (!res.ok) {
       error.value = 'Failed to load tracks';
@@ -318,10 +208,11 @@ async function runSearch({ reset = true } = {}) {
   loading.value = true;
   try {
     const pageOffset = reset ? 0 : searchOffset.value;
+    const pathPrefix = activePinPath.value ? `&pathPrefix=${encodeURIComponent(activePinPath.value)}` : '';
     const res = await apiFetch(
       `/api/search?root=${encodeURIComponent(props.currentRoot.id)}` +
         `&type=music&q=${encodeURIComponent(query)}` +
-        `&limit=${props.pageSize}&offset=${pageOffset}`
+        `&limit=${props.pageSize}&offset=${pageOffset}${pathPrefix}`
     );
     if (!res.ok) {
       return;
@@ -351,9 +242,10 @@ async function loadAlbums({ reset = true } = {}) {
   error.value = '';
   try {
     const pageOffset = reset ? 0 : albumsOffset.value;
+    const pathPrefix = activePinPath.value ? `&pathPrefix=${encodeURIComponent(activePinPath.value)}` : '';
     const res = await apiFetch(
       `/api/music/albums?root=${encodeURIComponent(props.currentRoot.id)}` +
-        `&limit=${props.pageSize}&offset=${pageOffset}`
+        `&limit=${props.pageSize}&offset=${pageOffset}${pathPrefix}`
     );
     if (!res.ok) {
       error.value = 'Failed to load albums';
@@ -384,9 +276,10 @@ async function loadArtists({ reset = true } = {}) {
   error.value = '';
   try {
     const pageOffset = reset ? 0 : artistsOffset.value;
+    const pathPrefix = activePinPath.value ? `&pathPrefix=${encodeURIComponent(activePinPath.value)}` : '';
     const res = await apiFetch(
       `/api/music/artists?root=${encodeURIComponent(props.currentRoot.id)}` +
-        `&limit=${props.pageSize}&offset=${pageOffset}`
+        `&limit=${props.pageSize}&offset=${pageOffset}${pathPrefix}`
     );
     if (!res.ok) {
       error.value = 'Failed to load artists';
@@ -408,8 +301,9 @@ async function loadAlbumTracks(key) {
   if (!props.currentRoot || !key) {
     return;
   }
+  const pathPrefix = activePinPath.value ? `&pathPrefix=${encodeURIComponent(activePinPath.value)}` : '';
   const res = await apiFetch(
-    `/api/music/album?root=${encodeURIComponent(props.currentRoot.id)}&key=${encodeURIComponent(key)}`
+    `/api/music/album?root=${encodeURIComponent(props.currentRoot.id)}&key=${encodeURIComponent(key)}${pathPrefix}`
   );
   if (!res.ok) {
     return;
@@ -422,9 +316,10 @@ async function loadArtistTracks(artist) {
   if (!props.currentRoot || !artist) {
     return;
   }
+  const pathPrefix = activePinPath.value ? `&pathPrefix=${encodeURIComponent(activePinPath.value)}` : '';
   const res = await apiFetch(
     `/api/music/artist?root=${encodeURIComponent(props.currentRoot.id)}` +
-      `&artist=${encodeURIComponent(artist)}`
+      `&artist=${encodeURIComponent(artist)}${pathPrefix}`
   );
   if (!res.ok) {
     return;
@@ -446,7 +341,13 @@ async function loadMore() {
     return;
   }
   if (mode.value === 'albums') {
+    if (selectedAlbum.value) {
+      return;
+    }
     await loadAlbums({ reset: false });
+    return;
+  }
+  if (mode.value === 'playlists') {
     return;
   }
   await loadArtists({ reset: false });
@@ -454,28 +355,38 @@ async function loadMore() {
 
 async function selectTrack(item) {
   selectedTrack.value = item;
-  currentTime.value = 0;
-  duration.value = item?.duration || 0;
-  await nextTick();
-  if (audioRef.value) {
-    audioRef.value.volume = volume.value;
-    audioRef.value.muted = muted.value;
-    audioRef.value.play().catch(() => {});
-  }
 }
 
 async function selectAlbum(album) {
   selectedAlbum.value = album;
   selectedArtist.value = null;
   await loadAlbumTracks(album.albumKey);
-  props.onNavigate({ mode: 'albums', albumKey: album.albumKey, artist: null });
+  props.onNavigate({ mode: 'albums', albumKey: album.albumKey, artist: null, playlistId: null });
+}
+
+function clearAlbumSelection() {
+  selectedAlbum.value = null;
+  albumTracks.value = [];
+  props.onNavigate({ mode: 'albums', albumKey: null, artist: null, playlistId: null });
 }
 
 async function selectArtist(artist) {
   selectedArtist.value = artist;
   selectedAlbum.value = null;
   await loadArtistTracks(artist.artist);
-  props.onNavigate({ mode: 'artists', artist: artist.artist, albumKey: null });
+  props.onNavigate({ mode: 'artists', artist: artist.artist, albumKey: null, playlistId: null });
+}
+
+function selectPlaylist(playlist) {
+  selectedPlaylistId.value = playlist?.id || null;
+  mode.value = 'playlists';
+  searchQuery.value = '';
+  props.onNavigate({
+    mode: 'playlists',
+    playlistId: selectedPlaylistId.value,
+    albumKey: null,
+    artist: null,
+  });
 }
 
 function selectMode(value) {
@@ -483,13 +394,18 @@ function selectMode(value) {
   searchQuery.value = '';
   selectedAlbum.value = null;
   selectedArtist.value = null;
+  if (value !== 'playlists') {
+    selectedPlaylistId.value = null;
+  }
   albumTracks.value = [];
   artistTracks.value = [];
-  props.onNavigate({ mode: value, albumKey: null, artist: null });
+  props.onNavigate({ mode: value, albumKey: null, artist: null, playlistId: null });
   if (value === 'songs') {
     loadTracks({ reset: true });
   } else if (value === 'albums') {
     loadAlbums({ reset: true });
+  } else if (value === 'playlists') {
+    return;
   } else {
     loadArtists({ reset: true });
   }
@@ -506,7 +422,12 @@ async function applyNavState() {
     }
     const key = props.navState?.albumKey;
     if (key) {
-      selectedAlbum.value = selectedAlbum.value?.albumKey === key ? selectedAlbum.value : { albumKey: key };
+      const foundAlbum = albums.value.find((album) => album.albumKey === key);
+      if (foundAlbum) {
+        selectedAlbum.value = foundAlbum;
+      } else if (selectedAlbum.value?.albumKey !== key) {
+        selectedAlbum.value = { albumKey: key };
+      }
       await loadAlbumTracks(key);
     } else {
       selectedAlbum.value = null;
@@ -528,15 +449,202 @@ async function applyNavState() {
     }
     return;
   }
+  if (nextMode === 'playlists') {
+    const playlistId = props.navState?.playlistId || null;
+    selectedPlaylistId.value = playlistId;
+    if (playlistId && !playlists.value.find((playlist) => playlist.id === playlistId)) {
+      selectedPlaylistId.value = null;
+    }
+    return;
+  }
   if (!items.value.length) {
     await loadTracks({ reset: true });
   }
+}
+
+function closeContextMenu() {
+  contextMenu.value = { open: false, x: 0, y: 0, track: null };
+}
+
+function openContextMenu(event, track) {
+  contextMenu.value = {
+    open: true,
+    x: event.clientX,
+    y: event.clientY,
+    track,
+  };
+}
+
+function persistPlaylists() {
+  localStorage.setItem('localCloudPlaylists', JSON.stringify(playlists.value));
+  localStorage.setItem('localCloudPlaylistCounter', String(draftCounter.value));
+}
+
+function loadPlaylists() {
+  try {
+    const stored = localStorage.getItem('localCloudPlaylists');
+    playlists.value = stored ? JSON.parse(stored) : [];
+  } catch {
+    playlists.value = [];
+  }
+  const counter = parseInt(localStorage.getItem('localCloudPlaylistCounter') || '1', 10);
+  draftCounter.value = Number.isFinite(counter) && counter > 0 ? counter : 1;
+}
+
+function ensureDraftPlaylist() {
+  let draft = playlists.value.find((playlist) => playlist.isDraft);
+  if (!draft) {
+    const id = `draft-${Date.now()}`;
+    draft = {
+      id,
+      name: `New Playlist #${draftCounter.value}`,
+      tracks: [],
+      isDraft: true,
+    };
+    draftCounter.value += 1;
+    playlists.value = [draft, ...playlists.value];
+  }
+  return draft;
+}
+
+function addTracksToPlaylist(tracksToAdd) {
+  if (!Array.isArray(tracksToAdd) || !tracksToAdd.length) {
+    return;
+  }
+  const draft = ensureDraftPlaylist();
+  const existing = new Set(draft.tracks.map((track) => track.path));
+  const added = [];
+  for (const track of tracksToAdd) {
+    if (!track?.path || existing.has(track.path)) {
+      continue;
+    }
+    existing.add(track.path);
+    added.push(track);
+  }
+  if (added.length) {
+    draft.tracks = [...draft.tracks, ...added];
+  }
+  persistPlaylists();
+}
+
+function addTrackToPlaylist(track) {
+  addTracksToPlaylist([track]);
+  closeContextMenu();
+}
+
+function addAlbumToPlaylist() {
+  if (!albumTracks.value.length) {
+    return;
+  }
+  addTracksToPlaylist(albumTracks.value);
+}
+
+function savePlaylist() {
+  if (!selectedPlaylist.value) {
+    return;
+  }
+  selectedPlaylist.value.isDraft = false;
+  persistPlaylists();
+}
+
+function clearPlaylist() {
+  if (!selectedPlaylist.value) {
+    return;
+  }
+  const removingId = selectedPlaylist.value.id;
+  playlists.value = playlists.value.filter((playlist) => playlist.id !== removingId);
+  if (selectedPlaylistId.value === removingId) {
+    selectedPlaylistId.value = null;
+  }
+  props.onNavigate({ mode: 'playlists', playlistId: null, albumKey: null, artist: null });
+  persistPlaylists();
+}
+
+function updatePlaylistName(value) {
+  if (!selectedPlaylist.value) {
+    return;
+  }
+  selectedPlaylist.value.name = value;
+  persistPlaylists();
+}
+
+function persistPins() {
+  localStorage.setItem('localCloudMusicPins', JSON.stringify(musicPins.value));
+}
+
+function loadPins() {
+  try {
+    const stored = localStorage.getItem('localCloudMusicPins');
+    musicPins.value = stored ? JSON.parse(stored) : [];
+  } catch {
+    musicPins.value = [];
+  }
+}
+
+function pinLabel(pathValue) {
+  if (!pathValue) {
+    return 'Root';
+  }
+  const parts = pathValue.split('/');
+  return parts[parts.length - 1] || pathValue;
+}
+
+function addPinForTrack(track) {
+  if (!track?.path) {
+    return;
+  }
+  const parts = track.path.split('/');
+  parts.pop();
+  const pathValue = parts.join('/');
+  if (musicPins.value.some((pin) => pin.path === pathValue)) {
+    closeContextMenu();
+    return;
+  }
+  const nextPin = {
+    id: `pin-${Date.now()}`,
+    path: pathValue,
+    label: pinLabel(pathValue),
+  };
+  musicPins.value = [...musicPins.value, nextPin];
+  persistPins();
+  closeContextMenu();
+}
+
+function selectPin(pin) {
+  activePin.value = pin;
+}
+
+function clearPin() {
+  activePin.value = null;
 }
 
 let searchTimer = null;
 watch(searchQuery, () => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => runSearch({ reset: true }), 250);
+});
+
+watch(activePin, () => {
+  searchQuery.value = '';
+  if (mode.value === 'songs') {
+    loadTracks({ reset: true });
+    return;
+  }
+  if (mode.value === 'albums') {
+    if (selectedAlbum.value) {
+      loadAlbumTracks(selectedAlbum.value.albumKey);
+      return;
+    }
+    loadAlbums({ reset: true });
+    return;
+  }
+  if (mode.value === 'artists') {
+    if (selectedArtist.value) {
+      loadArtistTracks(selectedArtist.value.artist);
+      return;
+    }
+    loadArtists({ reset: true });
+  }
 });
 
 watch(
@@ -546,6 +654,7 @@ watch(
     selectedTrack.value = null;
     selectedAlbum.value = null;
     selectedArtist.value = null;
+    selectedPlaylistId.value = null;
     albumTracks.value = [];
     artistTracks.value = [];
     applyNavState();
@@ -561,13 +670,6 @@ watch(
   { deep: true }
 );
 
-watch(selectedTrack, (value) => {
-  if (value?.duration && (!duration.value || duration.value < 0.5)) {
-    duration.value = value.duration;
-  }
-  albumArtOk.value = Boolean(value?.albumKey);
-});
-
 watch(
   () => props.pageSize,
   () => {
@@ -576,6 +678,9 @@ watch(
 );
 
 onMounted(() => {
+  loadPlaylists();
+  loadPins();
+  applyNavState();
   observer = new IntersectionObserver((entries) => {
     if (entries[0].isIntersecting) {
       loadMore();
@@ -584,6 +689,13 @@ onMounted(() => {
   if (sentinel.value) {
     observer.observe(sentinel.value);
   }
+  window.addEventListener('click', closeContextMenu);
+  window.addEventListener('scroll', closeContextMenu, true);
+});
+
+onUnmounted(() => {
+  window.removeEventListener('click', closeContextMenu);
+  window.removeEventListener('scroll', closeContextMenu, true);
 });
 
 watch(sentinel, (value) => {
@@ -615,29 +727,102 @@ watch(sentinel, (value) => {
       </div>
       <div class="sidebar-section">
         <div class="sidebar-title">Playlists</div>
-        <button class="sidebar-item placeholder" disabled>
-          <span class="icon"><i class="fa-solid fa-plus"></i></span>
-          Playlist +
+        <button
+          class="sidebar-item"
+          :class="{ active: mode === 'playlists' && !selectedPlaylistId }"
+          @click="selectMode('playlists')"
+        >
+          <span class="icon"><i class="fa-solid fa-list"></i></span>
+          Playlists
         </button>
+        <button
+          v-for="playlist in playlists"
+          :key="playlist.id"
+          class="sidebar-item"
+          :class="{ active: selectedPlaylistId === playlist.id }"
+          @click="selectPlaylist(playlist)"
+        >
+          <span class="icon"><i class="fa-solid fa-list-music"></i></span>
+          <span class="sidebar-label">{{ playlist.name }}</span>
+          <span class="sidebar-count">{{ playlist.tracks.length }}</span>
+        </button>
+        <div v-if="!playlists.length" class="sidebar-hint">Right-click a track to add.</div>
       </div>
       <div class="sidebar-section">
         <div class="sidebar-title">Pinned</div>
-        <button class="sidebar-item placeholder" disabled>
+        <button
+          class="sidebar-item"
+          :class="{ active: !activePin }"
+          @click="clearPin"
+        >
           <span class="icon"><i class="fa-regular fa-bookmark"></i></span>
-          Pin a location
+          All locations
         </button>
+        <button
+          v-for="pin in musicPins"
+          :key="pin.id"
+          class="sidebar-item"
+          :class="{ active: activePin?.id === pin.id }"
+          @click="selectPin(pin)"
+        >
+          <span class="icon"><i class="fa-solid fa-location-dot"></i></span>
+          <span class="sidebar-label">{{ pin.label }}</span>
+        </button>
+        <div v-if="!musicPins.length" class="sidebar-hint">Right-click a track to pin.</div>
       </div>
     </aside>
 
     <main class="browser music-browser">
       <div class="toolbar">
-        <div>
-          <strong>Music</strong>
-          <span class="meta" v-if="mode === 'songs'"> - {{ displaySongs.length }} of {{ isSearchMode ? searchTotal : total }}</span>
-          <span class="meta" v-else-if="mode === 'albums'"> - {{ filteredAlbums.length }} of {{ albumsTotal }}</span>
-          <span class="meta" v-else> - {{ filteredArtists.length }} of {{ artistsTotal }}</span>
+        <div class="toolbar-title">
+          <div class="toolbar-line">
+            <button v-if="isAlbumDetail" class="action-btn secondary" @click="clearAlbumSelection">
+              <i class="fa-solid fa-arrow-left"></i>
+              Back
+            </button>
+            <button
+              v-if="isPlaylistDetail"
+              class="action-btn secondary"
+              @click="selectMode('playlists')"
+            >
+              <i class="fa-solid fa-arrow-left"></i>
+              Back
+            </button>
+            <strong>
+              {{
+                mode === 'songs'
+                  ? 'Music'
+                  : mode === 'albums'
+                  ? 'Albums'
+                  : mode === 'artists'
+                  ? 'Artists'
+                  : 'Playlists'
+              }}
+            </strong>
+            <span class="meta" v-if="mode === 'songs'">
+              - {{ displaySongs.length }} of {{ isSearchMode ? searchTotal : total }}
+            </span>
+            <span class="meta" v-else-if="mode === 'albums' && !selectedAlbum">
+              - {{ filteredAlbums.length }} of {{ albumsTotal }}
+            </span>
+            <span class="meta" v-else-if="mode === 'albums'">
+              - {{ albumTrackCount }} tracks
+            </span>
+            <span class="meta" v-else-if="mode === 'playlists' && !selectedPlaylist">
+              - {{ playlists.length }} playlists
+            </span>
+            <span class="meta" v-else-if="mode === 'playlists'">
+              - {{ playlistTracks.length }} tracks
+            </span>
+            <span class="meta" v-else>
+              - {{ filteredArtists.length }} of {{ artistsTotal }}
+            </span>
+          </div>
         </div>
-        <div class="toolbar-actions">
+        <div
+          class="toolbar-actions"
+          v-if="mode === 'songs' || (mode === 'albums' && !selectedAlbum) || mode === 'artists'"
+        >
           <input
             class="search"
             type="search"
@@ -667,6 +852,7 @@ watch(sentinel, (value) => {
           class="music-row"
           :class="{ selected: selectedTrack?.path === item.path }"
           @click="selectTrack(item)"
+          @contextmenu.prevent="openContextMenu($event, item)"
         >
           <div class="music-title">{{ trackTitle(item) }}</div>
           <div>{{ trackAlbum(item) }}</div>
@@ -675,7 +861,7 @@ watch(sentinel, (value) => {
         </button>
       </div>
 
-      <div v-if="mode === 'albums'" class="album-grid">
+      <div v-if="mode === 'albums' && !selectedAlbum" class="album-grid">
         <button
           v-for="album in filteredAlbums"
           :key="album.albumKey"
@@ -697,25 +883,110 @@ watch(sentinel, (value) => {
         </button>
       </div>
 
-      <div v-if="mode === 'albums' && selectedAlbum" class="album-tracks">
-        <div class="music-header">
-          <div>Song</div>
-          <div>Album</div>
-          <div>Artist</div>
-          <div>Duration</div>
+      <div v-if="mode === 'albums' && selectedAlbum" class="album-detail">
+        <div class="album-detail-header">
+          <div class="album-detail-art">
+            <img
+              v-if="selectedAlbum.coverKey"
+              :src="albumArtUrl(rootId, selectedAlbum.coverKey)"
+              :alt="selectedAlbum.album"
+            />
+            <div v-else class="tile-fallback"><i class="fa-solid fa-compact-disc"></i></div>
+          </div>
+          <div class="album-detail-info">
+            <div class="album-detail-title">{{ selectedAlbum.album || 'Unknown Album' }}</div>
+            <div class="meta">{{ selectedAlbum.artist || 'Unknown Artist' }}</div>
+            <div v-if="selectedAlbum.releaseDate" class="meta">
+              Released {{ selectedAlbum.releaseDate }}
+            </div>
+            <div class="meta">{{ albumTrackCount }} tracks</div>
+          </div>
+          <div class="album-detail-actions">
+            <button class="action-btn secondary" @click="addAlbumToPlaylist">
+              <i class="fa-solid fa-plus"></i>
+              Add to playlist
+            </button>
+          </div>
         </div>
+        <div class="album-tracks">
+          <div class="music-header">
+            <div>Song</div>
+            <div>Album</div>
+            <div>Artist</div>
+            <div>Duration</div>
+          </div>
+          <button
+            v-for="track in albumTracks"
+            :key="track.path"
+            class="music-row"
+            :class="{ selected: selectedTrack?.path === track.path }"
+            @click="selectTrack(track)"
+            @contextmenu.prevent="openContextMenu($event, track)"
+          >
+            <div class="music-title">{{ trackTitle(track) }}</div>
+            <div>{{ trackAlbum(track) }}</div>
+            <div>{{ trackArtist(track) }}</div>
+            <div>{{ formatDuration(track.duration) || '--' }}</div>
+          </button>
+        </div>
+      </div>
+
+      <div v-if="mode === 'playlists' && !selectedPlaylist" class="playlist-grid">
         <button
-          v-for="track in albumTracks"
-          :key="track.path"
-          class="music-row"
-          :class="{ selected: selectedTrack?.path === track.path }"
-          @click="selectTrack(track)"
+          v-for="playlist in playlists"
+          :key="playlist.id"
+          class="playlist-card"
+          @click="selectPlaylist(playlist)"
         >
-          <div class="music-title">{{ trackTitle(track) }}</div>
-          <div>{{ trackAlbum(track) }}</div>
-          <div>{{ trackArtist(track) }}</div>
-          <div>{{ formatDuration(track.duration) || '--' }}</div>
+          <div class="playlist-card-title">{{ playlist.name }}</div>
+          <div class="meta">{{ playlist.tracks.length }} tracks</div>
+          <div class="meta" v-if="playlist.isDraft">Draft</div>
         </button>
+        <div v-if="!playlists.length" class="empty-state">
+          Right-click a track to start a playlist.
+        </div>
+      </div>
+
+      <div v-if="mode === 'playlists' && selectedPlaylist" class="playlist-detail">
+        <div class="playlist-detail-header">
+          <input
+            class="playlist-name-input"
+            type="text"
+            :value="selectedPlaylist.name"
+            @input="updatePlaylistName($event.target.value)"
+          />
+          <div class="playlist-detail-actions">
+            <button class="action-btn secondary" @click="savePlaylist">
+              <i class="fa-solid fa-floppy-disk"></i>
+              Save
+            </button>
+            <button class="action-btn secondary" @click="clearPlaylist">
+              <i class="fa-solid fa-trash"></i>
+              Clear
+            </button>
+          </div>
+        </div>
+        <div class="album-tracks">
+          <div class="music-header">
+            <div>Song</div>
+            <div>Album</div>
+            <div>Artist</div>
+            <div>Duration</div>
+          </div>
+          <button
+            v-for="track in playlistTracks"
+            :key="track.path"
+            class="music-row"
+            :class="{ selected: selectedTrack?.path === track.path }"
+            @click="selectTrack(track)"
+            @contextmenu.prevent="openContextMenu($event, track)"
+          >
+            <div class="music-title">{{ trackTitle(track) }}</div>
+            <div>{{ trackAlbum(track) }}</div>
+            <div>{{ trackArtist(track) }}</div>
+            <div>{{ formatDuration(track.duration) || '--' }}</div>
+          </button>
+        </div>
       </div>
 
       <div v-if="mode === 'artists'" class="artist-list">
@@ -745,6 +1016,7 @@ watch(sentinel, (value) => {
           class="music-row"
           :class="{ selected: selectedTrack?.path === track.path }"
           @click="selectTrack(track)"
+          @contextmenu.prevent="openContextMenu($event, track)"
         >
           <div class="music-title">{{ trackTitle(track) }}</div>
           <div>{{ trackAlbum(track) }}</div>
@@ -759,85 +1031,28 @@ watch(sentinel, (value) => {
       <div ref="sentinel" class="scroll-sentinel"></div>
     </main>
 
-    <audio
-      ref="audioRef"
-      :src="selectedTrack ? fileUrl(rootId, selectedTrack.path) : ''"
-      preload="metadata"
-      @timeupdate="onTimeUpdate"
-      @loadedmetadata="onLoadedMetadata"
-      @durationchange="onDurationChange"
-      @play="onPlay"
-      @pause="onPause"
-      @ended="onEnded"
-    ></audio>
+    <div
+      v-if="contextMenu.open"
+      class="context-menu"
+      :style="{ top: `${contextMenu.y}px`, left: `${contextMenu.x}px` }"
+    >
+      <button class="context-menu-item" @click="addTrackToPlaylist(contextMenu.track)">
+        <i class="fa-solid fa-plus"></i>
+        Add to playlist
+      </button>
+      <button class="context-menu-item" @click="addPinForTrack(contextMenu.track)">
+        <i class="fa-regular fa-bookmark"></i>
+        Pin location
+      </button>
+    </div>
+
   </section>
 
-  <div class="player-bar">
-    <div class="player-bar-left">
-      <div class="player-bar-art">
-        <img
-          v-if="selectedTrack?.albumKey && albumArtOk"
-          :src="albumArtUrl(rootId, selectedTrack.albumKey)"
-          :alt="trackAlbum(selectedTrack)"
-          @error="albumArtOk = false"
-        />
-        <div v-else class="tile-fallback"><i class="fa-solid fa-compact-disc"></i></div>
-      </div>
-      <div class="player-bar-info">
-        <div class="player-bar-title">
-          {{ selectedTrack ? trackTitle(selectedTrack) : 'Nothing playing' }}
-        </div>
-        <div class="meta" v-if="selectedTrack">
-          {{ trackAlbum(selectedTrack) }}
-        </div>
-        <div class="meta" v-if="selectedTrack">
-          {{ trackArtist(selectedTrack) }}
-        </div>
-      </div>
-    </div>
-    <div class="player-bar-middle">
-      <div class="player-bar-seek">
-        <span>{{ formatTime(currentTime) }}</span>
-        <input
-          type="range"
-          min="0"
-          :max="seekMax"
-          step="0.1"
-          :value="currentTime"
-          @input="onSeek"
-          :disabled="!selectedTrack || !seekMax"
-        />
-        <span>{{ formatTime(effectiveDuration) }}</span>
-      </div>
-    </div>
-    <div class="player-bar-right">
-      <div class="player-bar-buttons">
-        <button class="icon-btn" @click="playPrev" :disabled="!selectedTrack" aria-label="Previous">
-          <i class="fa-solid fa-backward-step"></i>
-        </button>
-        <button class="icon-btn" @click="togglePlay" :disabled="!selectedTrack" aria-label="Play/pause">
-          <i :class="isPlaying ? 'fa-solid fa-pause' : 'fa-solid fa-play'"></i>
-        </button>
-        <button class="icon-btn" @click="playNext" :disabled="!selectedTrack" aria-label="Next">
-          <i class="fa-solid fa-forward-step"></i>
-        </button>
-      </div>
-      <div class="player-bar-volume">
-        <button class="icon-btn" @click="toggleMute" :disabled="!selectedTrack" aria-label="Mute">
-          <i :class="muted || volume === 0 ? 'fa-solid fa-volume-xmark' : 'fa-solid fa-volume-high'"></i>
-        </button>
-        <input
-          class="volume-slider"
-          type="range"
-          min="0"
-          max="1"
-          step="0.01"
-          :value="volume"
-          @input="onVolumeInput"
-          :disabled="!selectedTrack"
-          aria-label="Volume"
-        />
-      </div>
-    </div>
-  </div>
+  <MiniPlayer
+    :tracks="queue"
+    :selected-track="selectedTrack"
+    :root-id="rootId"
+    :auto-play="true"
+    @select="selectTrack"
+  />
 </template>

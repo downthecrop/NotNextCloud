@@ -42,6 +42,20 @@ async function ensureDir(targetPath) {
   await fs.promises.mkdir(targetPath, { recursive: true });
 }
 
+function toStatNumber(value) {
+  return Number.isFinite(value) ? value : null;
+}
+
+async function hashFile(fullPath, algorithm) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash(algorithm);
+    const stream = fs.createReadStream(fullPath);
+    stream.on('error', reject);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('end', () => resolve(hash.digest('hex')));
+  });
+}
+
 async function writeAlbumArt({ albumKey, album, artist, picture, albumArtDir, db, logger }) {
   if (!picture?.data || !albumArtDir) {
     return;
@@ -102,7 +116,11 @@ function pickFolderArt(dirents, rootPath, relPath) {
   return path.join(rootPath, relPath, pick.name);
 }
 
-async function walkDir(rootId, rootPath, relPath, scanId, db, logger, albumArtDir) {
+async function walkDir(rootId, rootPath, relPath, scanId, db, logger, albumArtDir, scanOptions) {
+  const options = scanOptions || {};
+  const hashAlgorithm = options.hashAlgorithm || 'sha256';
+  const hashFiles = options.hashFiles !== false;
+  const forceHash = Boolean(options.forceHash);
   let dirents;
   try {
     dirents = await fs.promises.readdir(path.join(rootPath, relPath), {
@@ -131,6 +149,10 @@ async function walkDir(rootId, rootPath, relPath, scanId, db, logger, albumArtDi
     }
 
     const isDir = dirent.isDirectory();
+    const entrySize = isDir ? 0 : stats.size;
+    const entryMtime = Math.floor(stats.mtimeMs);
+    const entryInode = toStatNumber(stats.ino);
+    const entryDevice = toStatNumber(stats.dev);
     const ext = isDir ? '' : path.extname(dirent.name).toLowerCase();
     let mimeType = isDir ? null : mime.lookup(ext);
     if (!mimeType && ext === '.opus') {
@@ -138,58 +160,82 @@ async function walkDir(rootId, rootPath, relPath, scanId, db, logger, albumArtDi
     }
     const safeMime = isDir ? null : mimeType || 'application/octet-stream';
     const parent = normalizeParent(entryRel);
+    const existing = db.getEntry.get(rootId, entryRel);
+    const sameStat =
+      existing &&
+      existing.size === entrySize &&
+      existing.mtime === entryMtime &&
+      existing.is_dir === (isDir ? 1 : 0) &&
+      (existing.inode ?? null) === entryInode &&
+      (existing.device ?? null) === entryDevice;
     let title = null;
     let artist = null;
     let album = null;
     let duration = null;
     let albumKey = null;
+    let contentHash = existing?.content_hash || null;
+    let hashAlg = existing?.hash_alg || null;
 
     if (!isDir && safeMime && safeMime.startsWith('audio/')) {
-      const metadataLib = await getMusicMetadata();
-      if (metadataLib) {
-        try {
-          const metadata = await metadataLib.parseFile(entryFull, { duration: true });
-          const common = metadata.common || {};
-          const rawTitle = common.title || '';
-          const rawArtist = common.artist || (Array.isArray(common.artists) ? common.artists[0] : '');
-          const rawAlbum = common.album || '';
-          const parentFolder = parent ? path.basename(parent) : '';
-          title = rawTitle || path.parse(dirent.name).name;
-          artist = rawArtist || 'Unknown Artist';
-          album = rawAlbum || parentFolder || 'Unknown Album';
-          duration = metadata.format?.duration || null;
-          albumKey = albumKeyFor(artist, album);
+      if (existing && sameStat) {
+        title = existing.title;
+        artist = existing.artist;
+        album = existing.album;
+        duration = existing.duration;
+        albumKey = existing.album_key;
+      }
+      if (!existing || !sameStat) {
+        title = null;
+        artist = null;
+        album = null;
+        duration = null;
+        albumKey = null;
+        const metadataLib = await getMusicMetadata();
+        if (metadataLib) {
+          try {
+            const metadata = await metadataLib.parseFile(entryFull, { duration: true });
+            const common = metadata.common || {};
+            const rawTitle = common.title || '';
+            const rawArtist = common.artist || (Array.isArray(common.artists) ? common.artists[0] : '');
+            const rawAlbum = common.album || '';
+            const parentFolder = parent ? path.basename(parent) : '';
+            title = rawTitle || path.parse(dirent.name).name;
+            artist = rawArtist || 'Unknown Artist';
+            album = rawAlbum || parentFolder || 'Unknown Album';
+            duration = metadata.format?.duration || null;
+            albumKey = albumKeyFor(artist, album);
 
-          if (Array.isArray(common.picture) && common.picture.length && albumKey) {
-            await writeAlbumArt({
-              albumKey,
-              album,
-              artist,
-              picture: common.picture[0],
-              albumArtDir,
-              db,
-              logger,
-            });
+            if (Array.isArray(common.picture) && common.picture.length && albumKey) {
+              await writeAlbumArt({
+                albumKey,
+                album,
+                artist,
+                picture: common.picture[0],
+                albumArtDir,
+                db,
+                logger,
+              });
+            }
+          } catch (error) {
+            logger?.warn?.({ err: error, entryRel }, 'Failed to parse audio metadata');
+            const parentFolder = parent ? path.basename(parent) : '';
+            title = path.parse(dirent.name).name;
+            artist = 'Unknown Artist';
+            album = parentFolder || 'Unknown Album';
+            albumKey = albumKeyFor(artist, album);
           }
-        } catch (error) {
-          logger?.warn?.({ err: error, entryRel }, 'Failed to parse audio metadata');
+        } else {
           const parentFolder = parent ? path.basename(parent) : '';
           title = path.parse(dirent.name).name;
           artist = 'Unknown Artist';
           album = parentFolder || 'Unknown Album';
           albumKey = albumKeyFor(artist, album);
         }
-      } else {
-        const parentFolder = parent ? path.basename(parent) : '';
-        title = path.parse(dirent.name).name;
-        artist = 'Unknown Artist';
-        album = parentFolder || 'Unknown Album';
-        albumKey = albumKeyFor(artist, album);
       }
 
       if (albumKey && folderArtPath) {
-        const existing = db.getAlbumArt.get(albumKey);
-        if (!existing?.path) {
+        const existingArt = db.getAlbumArt.get(albumKey);
+        if (!existingArt?.path) {
           db.upsertAlbumArt.run({
             album_key: albumKey,
             album,
@@ -201,31 +247,56 @@ async function walkDir(rootId, rootPath, relPath, scanId, db, logger, albumArtDi
       }
     }
 
-    db.upsertEntry.run({
-      root_id: rootId,
-      rel_path: entryRel,
-      parent,
-      name: dirent.name,
-      ext,
-      size: isDir ? 0 : stats.size,
-      mtime: Math.floor(stats.mtimeMs),
-      mime: safeMime,
-      is_dir: isDir ? 1 : 0,
-      scan_id: scanId,
-      title,
-      artist,
-      album,
-      duration,
-      album_key: albumKey,
-    });
+    const needsHash =
+      hashFiles &&
+      !isDir &&
+      (forceHash || !sameStat || !contentHash || hashAlg !== hashAlgorithm);
+    if (!isDir && needsHash) {
+      try {
+        contentHash = await hashFile(entryFull, hashAlgorithm);
+        hashAlg = hashAlgorithm;
+      } catch (error) {
+        logger?.warn?.({ err: error, entryRel }, 'Failed to hash file');
+      }
+    }
+    if (!hashFiles && !sameStat) {
+      contentHash = null;
+      hashAlg = null;
+    }
+
+    if (sameStat && !needsHash && (!isDir || existing)) {
+      db.touchEntry.run(scanId, rootId, entryRel);
+    } else {
+      db.upsertEntry.run({
+        root_id: rootId,
+        rel_path: entryRel,
+        parent,
+        name: dirent.name,
+        ext,
+        size: entrySize,
+        mtime: entryMtime,
+        mime: safeMime,
+        is_dir: isDir ? 1 : 0,
+        scan_id: scanId,
+        title,
+        artist,
+        album,
+        duration,
+        album_key: albumKey,
+        content_hash: contentHash,
+        hash_alg: hashAlg,
+        inode: entryInode,
+        device: entryDevice,
+      });
+    }
 
     if (isDir) {
-      await walkDir(rootId, rootPath, entryRel, scanId, db, logger, albumArtDir);
+      await walkDir(rootId, rootPath, entryRel, scanId, db, logger, albumArtDir, scanOptions);
     }
   }
 }
 
-async function scanRoot(root, scanId, db, logger, previewDir) {
+async function scanRoot(root, scanId, db, logger, previewDir, scanOptions) {
   if (!root.absPath) {
     logger?.warn?.({ root }, 'Root path missing');
     return;
@@ -262,11 +333,15 @@ async function scanRoot(root, scanId, db, logger, previewDir) {
     album: null,
     duration: null,
     album_key: null,
+    content_hash: null,
+    hash_alg: null,
+    inode: toStatNumber(rootStats.ino),
+    device: toStatNumber(rootStats.dev),
   });
 
   if (rootStats.isDirectory()) {
     const albumArtDir = previewDir ? path.join(previewDir, 'album-art') : null;
-    await walkDir(root.id, root.absPath, '', scanId, db, logger, albumArtDir);
+    await walkDir(root.id, root.absPath, '', scanId, db, logger, albumArtDir, scanOptions);
   }
 
   db.cleanupOld.run(root.id, scanId);
@@ -277,15 +352,20 @@ function createIndexer(config, db, logger) {
   let scanId = Date.now();
   let lastScanAt = null;
 
-  const scanAll = async () => {
+  const scanAll = async ({ forceHash = false } = {}) => {
     if (scanInProgress) {
       return;
     }
     scanInProgress = true;
     scanId += 1;
+    const scanOptions = {
+      hashAlgorithm: config.hashAlgorithm || 'sha256',
+      hashFiles: config.hashFiles !== false,
+      forceHash,
+    };
 
     for (const root of config.roots) {
-      await scanRoot(root, scanId, db, logger, config.previewDir);
+      await scanRoot(root, scanId, db, logger, config.previewDir, scanOptions);
     }
 
     lastScanAt = Date.now();

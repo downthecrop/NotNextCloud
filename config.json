@@ -4,6 +4,8 @@
   "dbPath": "./data/files.db",
   "previewDir": "./data/previews",
   "scanIntervalSeconds": 60,
+  "hashAlgorithm": "sha256",
+  "hashFiles": true,
   "devMode": true,
   "roots": [
     {
