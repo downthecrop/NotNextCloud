@@ -1,0 +1,9 @@
+services:
+  local-cloud:
+    build: .
+    ports:
+      - "4170:4170"
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - ./data:/app/data
+      - ./test-data:/app/test-data

@@ -1,0 +1,18 @@
+{
+  "host": "0.0.0.0",
+  "port": 4170,
+  "dbPath": "./data/files.db",
+  "previewDir": "./data/previews",
+  "scanIntervalSeconds": 60,
+  "devMode": true,
+  "roots": [
+    {
+      "id": "local",
+      "path": "./test-data"
+    }
+  ],
+  "auth": {
+    "user": "admin",
+    "pass": "admin"
+  }
+}
