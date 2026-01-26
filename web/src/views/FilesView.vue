@@ -1,7 +1,16 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import { useApi } from '../composables/useApi';
+import { useDownloads } from '../composables/useDownloads';
+import { useImageErrors } from '../composables/useImageErrors';
+import { useInfiniteScroll } from '../composables/useInfiniteScroll';
+import { useMenu, useGlobalMenuClose } from '../composables/useMenu';
+import { useMultiSelect } from '../composables/useMultiSelect';
+import { useSidebar } from '../composables/useSidebar';
 import MiniPlayer from '../components/MiniPlayer.vue';
+import { formatDate, formatSize } from '../utils/formatting';
+import { itemKey as buildItemKey } from '../utils/itemKey';
+import { isAudio, isImage, isMedia, isVideo } from '../utils/media';
 
 const props = defineProps({
   roots: {
@@ -9,6 +18,10 @@ const props = defineProps({
     required: true,
   },
   currentRoot: {
+    type: Object,
+    default: null,
+  },
+  navState: {
     type: Object,
     default: null,
   },
@@ -20,32 +33,80 @@ const props = defineProps({
     type: Function,
     required: true,
   },
+  onOpenInMusic: {
+    type: Function,
+    default: null,
+  },
+  onOpenInPhotos: {
+    type: Function,
+    default: null,
+  },
 });
 
-const { apiFetch, fileUrl, previewUrl } = useApi();
+const { apiFetch, fileUrl, previewUrl, downloadUrl } = useApi();
+const { downloadFile, downloadZipPaths } = useDownloads();
 
 const currentPath = ref('');
 const items = ref([]);
 const listTotal = ref(0);
 const listOffset = ref(0);
 const searchQuery = ref('');
+const searchAllRoots = ref(false);
 const searchResults = ref([]);
 const searchTotal = ref(0);
 const searchOffset = ref(0);
 const viewMode = ref('list');
 const loading = ref(false);
 const error = ref('');
-const selectedPaths = ref([]);
+const { sidebarOpen, toggleSidebar, closeSidebar } = useSidebar();
 const modalOpen = ref(false);
 const modalItem = ref(null);
 const zoomLevel = ref(1);
-const sentinel = ref(null);
-let observer = null;
+const {
+  menu: breadcrumbMenu,
+  openMenu: openBreadcrumbMenuBase,
+  closeMenu: closeBreadcrumbMenu,
+} = useMenu({ path: '' });
+const {
+  menu: itemMenu,
+  openMenu: openItemMenuBase,
+  closeMenu: closeItemMenu,
+} = useMenu({ item: null });
+const lastNavToken = ref(0);
+const pendingOpen = ref(null);
+useGlobalMenuClose([closeBreadcrumbMenu, closeItemMenu]);
 
 const rootId = computed(() => props.currentRoot?.id || '');
+function itemRootId(item) {
+  return item?.rootId || rootId.value;
+}
+function itemKey(item) {
+  return buildItemKey(item, rootId.value);
+}
+const { hasImageError, markImageError, resetImageErrors } = useImageErrors({
+  getKey: (item) => `${itemRootId(item)}:${item?.path || ''}`,
+});
 const isSearchMode = computed(() => Boolean(searchQuery.value.trim()));
 const displayItems = computed(() => (isSearchMode.value ? searchResults.value : items.value));
+const {
+  selectedKeys: selectedPaths,
+  clearSelection,
+  setSingleSelection,
+  toggleSelection: toggleItemSelection,
+  selectRange,
+  isSelected,
+} = useMultiSelect({
+  getItems: () => displayItems.value,
+  getKey: (item) => itemKey(item),
+});
 const selectionCount = computed(() => selectedPaths.value.length);
+const selectedItems = computed(() => {
+  if (!selectedPaths.value.length) {
+    return [];
+  }
+  const byKey = new Map(displayItems.value.map((item) => [itemKey(item), item]));
+  return selectedPaths.value.map((key) => byKey.get(key)).filter(Boolean);
+});
 const hasMore = computed(() => {
   if (isSearchMode.value) {
     return searchResults.value.length < searchTotal.value;
@@ -80,27 +141,112 @@ const activeItem = computed(() => {
   }
   const needle = selectedPaths.value[selectedPaths.value.length - 1];
   return (
-    displayItems.value.find((item) => item.path === needle) ||
-    items.value.find((item) => item.path === needle) ||
-    searchResults.value.find((item) => item.path === needle) ||
+    displayItems.value.find((item) => itemKey(item) === needle) ||
+    items.value.find((item) => itemKey(item) === needle) ||
+    searchResults.value.find((item) => itemKey(item) === needle) ||
     null
   );
 });
 
-function isImage(item) {
-  return item?.mime?.startsWith('image/');
+async function scheduleScan(mode, pathValue) {
+  if (!props.currentRoot) {
+    return;
+  }
+  await apiFetch('/api/scan', {
+    method: 'POST',
+    body: JSON.stringify({
+      root: props.currentRoot.id,
+      path: pathValue || '',
+      mode,
+    }),
+  });
 }
 
-function isVideo(item) {
-  return item?.mime?.startsWith('video/');
+async function refreshPath(pathValue) {
+  await scheduleScan('full', pathValue);
+  closeBreadcrumbMenu();
 }
 
-function isAudio(item) {
-  return item?.mime?.startsWith('audio/');
+async function forceRehashPath(pathValue) {
+  await scheduleScan('rehash', pathValue);
+  closeBreadcrumbMenu();
 }
 
-function isMedia(item) {
-  return isImage(item) || isVideo(item) || isAudio(item);
+function openBreadcrumbMenu(event, crumb, index) {
+  if (index !== breadcrumbs.value.length - 1) {
+    return;
+  }
+  closeItemMenu();
+  openBreadcrumbMenuBase(event, { path: crumb.path || '' });
+}
+
+function openItemMenu(event, item) {
+  event.preventDefault();
+  closeBreadcrumbMenu();
+  if (!isSelected(item)) {
+    setSingleSelection(item);
+  }
+  openItemMenuBase(event, { item });
+}
+
+function handleItemDownload(item) {
+  if (!item?.path || !itemRootId(item)) {
+    return;
+  }
+  const targetRootId = itemRootId(item);
+  if (item.isDir) {
+    downloadZipPaths({
+      rootId: targetRootId,
+      paths: [item.path],
+      zipLabel: 'files',
+    });
+  } else {
+    downloadFile({
+      rootId: targetRootId,
+      path: item.path,
+      filename: item.name || 'download',
+    });
+  }
+  closeItemMenu();
+}
+
+function handleDownloadSelection() {
+  downloadZip();
+  closeItemMenu();
+}
+
+function handleOpenInMusic(item) {
+  if (!item?.path || !props.onOpenInMusic) {
+    return;
+  }
+  if (!isAudio(item)) {
+    return;
+  }
+  props.onOpenInMusic({
+    rootId: itemRootId(item),
+    path: item.path,
+    albumKey: item.albumKey || null,
+  });
+  closeItemMenu();
+}
+
+function handleOpenInPhotos(item) {
+  if (!item?.path || !props.onOpenInPhotos) {
+    return;
+  }
+  if (!isImage(item)) {
+    return;
+  }
+  props.onOpenInPhotos({
+    rootId: itemRootId(item),
+    path: item.path,
+  });
+  closeItemMenu();
+}
+
+function handleRootSelect(root) {
+  props.onSelectRoot(root);
+  closeSidebar();
 }
 
 function iconClass(item) {
@@ -119,27 +265,6 @@ function iconClass(item) {
   return 'fa-solid fa-file';
 }
 
-function formatSize(bytes) {
-  if (!bytes && bytes !== 0) {
-    return '';
-  }
-  if (bytes === 0) {
-    return '0 B';
-  }
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const size = Math.floor(Math.log(bytes) / Math.log(1024));
-  const value = bytes / Math.pow(1024, size);
-  return `${value.toFixed(value < 10 ? 1 : 0)} ${units[size]}`;
-}
-
-function formatDate(value) {
-  if (!value) {
-    return '';
-  }
-  const date = new Date(value);
-  return date.toLocaleString();
-}
-
 async function loadList({ reset = true } = {}) {
   if (!props.currentRoot) {
     return;
@@ -148,7 +273,7 @@ async function loadList({ reset = true } = {}) {
     listOffset.value = 0;
     listTotal.value = 0;
     items.value = [];
-    selectedPaths.value = [];
+    clearSelection();
   }
   loading.value = true;
   error.value = '';
@@ -176,7 +301,8 @@ async function loadList({ reset = true } = {}) {
 }
 
 async function runSearch({ reset = true } = {}) {
-  if (!props.currentRoot) {
+  const targetRootId = searchAllRoots.value ? '__all__' : props.currentRoot?.id;
+  if (!targetRootId) {
     return;
   }
   const query = searchQuery.value.trim();
@@ -190,13 +316,13 @@ async function runSearch({ reset = true } = {}) {
     searchResults.value = [];
     searchOffset.value = 0;
     searchTotal.value = 0;
-    selectedPaths.value = [];
+    clearSelection();
   }
   loading.value = true;
   try {
     const offset = reset ? 0 : searchOffset.value;
     const res = await apiFetch(
-      `/api/search?root=${encodeURIComponent(props.currentRoot.id)}` +
+      `/api/search?root=${encodeURIComponent(targetRootId)}` +
         `&q=${encodeURIComponent(query)}` +
         `&limit=${props.pageSize}&offset=${offset}`
     );
@@ -217,25 +343,24 @@ async function runSearch({ reset = true } = {}) {
 
 async function openItem(item) {
   if (item.isDir) {
+    if (itemRootId(item) && itemRootId(item) !== rootId.value) {
+      const targetRoot = props.roots.find((root) => root.id === itemRootId(item));
+      if (targetRoot) {
+        pendingOpen.value = { path: item.path, rootId: itemRootId(item) };
+        props.onSelectRoot(targetRoot);
+      }
+      return;
+    }
     currentPath.value = item.path;
     searchQuery.value = '';
     await loadList({ reset: true });
     return;
   }
-
-  if (isSearchMode.value) {
-    const parts = item.path.split('/');
-    parts.pop();
-    currentPath.value = parts.join('/');
-    searchQuery.value = '';
-    await loadList({ reset: true });
-    selectedPaths.value = [item.path];
-  }
 }
 
 function openModal(item) {
   modalItem.value = item;
-  selectedPaths.value = [item.path];
+  setSingleSelection(item);
   zoomLevel.value = 1;
   modalOpen.value = true;
 }
@@ -249,7 +374,7 @@ function setModalItem(item) {
     return;
   }
   modalItem.value = item;
-  selectedPaths.value = [item.path];
+  setSingleSelection(item);
   zoomLevel.value = 1;
 }
 
@@ -277,37 +402,37 @@ function zoomOut() {
   zoomLevel.value = Math.max(1, zoomLevel.value - 0.25);
 }
 
-function toggleSelection(item, event) {
-  const path = item.path;
-  if (event?.metaKey || event?.ctrlKey) {
-    if (selectedPaths.value.includes(path)) {
-      selectedPaths.value = selectedPaths.value.filter((itemPath) => itemPath !== path);
-    } else {
-      selectedPaths.value = [...selectedPaths.value, path];
-    }
-    return;
-  }
-  selectedPaths.value = [path];
-}
-
 async function handleItemClick(item, event) {
-  if (item.isDir && !(event?.metaKey || event?.ctrlKey)) {
+  const hasMeta = event?.metaKey || event?.ctrlKey;
+  const hasShift = event?.shiftKey;
+  const hasModifier = hasMeta || hasShift;
+
+  if (item.isDir && !hasModifier) {
     await openItem(item);
     return;
   }
-  if (!item.isDir && !event?.metaKey && !event?.ctrlKey && isMedia(item)) {
-    toggleSelection(item, event);
-    openModal(item);
+
+  if (hasShift) {
+    selectRange(item, { additive: hasMeta });
     return;
   }
-  toggleSelection(item, event);
+
+  if (hasMeta) {
+    toggleItemSelection(item);
+    return;
+  }
+
+  setSingleSelection(item);
+  if (!item.isDir && isMedia(item)) {
+    openModal(item);
+  }
 }
 
 function handlePlayerSelect(track) {
   if (!track?.path) {
     return;
   }
-  selectedPaths.value = [track.path];
+  setSingleSelection(track);
 }
 
 function handleModalPlayerSelect(track) {
@@ -321,27 +446,32 @@ function goToCrumb(crumb) {
 }
 
 async function downloadZip() {
-  if (!selectionCount.value || !props.currentRoot) {
+  const targetItems = selectedItems.value;
+  if (!targetItems.length) {
     return;
   }
-  const res = await apiFetch('/api/zip', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      root: props.currentRoot.id,
-      paths: selectedPaths.value,
-    }),
-  });
-  if (!res.ok) {
-    return;
+  const grouped = new Map();
+  for (const item of targetItems) {
+    const targetRootId = itemRootId(item);
+    if (!targetRootId || !item?.path) {
+      continue;
+    }
+    if (!grouped.has(targetRootId)) {
+      grouped.set(targetRootId, []);
+    }
+    grouped.get(targetRootId).push(item.path);
   }
-  const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = 'files.zip';
-  link.click();
-  URL.revokeObjectURL(url);
+  for (const [targetRootId, paths] of grouped.entries()) {
+    if (!paths.length) {
+      continue;
+    }
+    await downloadZipPaths({
+      rootId: targetRootId,
+      paths,
+      zipLabel: 'files',
+      includeRoot: grouped.size > 1,
+    });
+  }
 }
 
 async function loadMore() {
@@ -355,10 +485,19 @@ async function loadMore() {
   }
 }
 
+const { sentinel } = useInfiniteScroll(loadMore);
+
 let searchTimer = null;
 watch(searchQuery, () => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => runSearch({ reset: true }), 250);
+});
+
+watch(searchAllRoots, () => {
+  clearSelection();
+  if (isSearchMode.value) {
+    runSearch({ reset: true });
+  }
 });
 
 watch(
@@ -368,9 +507,39 @@ watch(
     searchQuery.value = '';
     modalItem.value = null;
     modalOpen.value = false;
+    resetImageErrors();
+    const pending = pendingOpen.value;
+    pendingOpen.value = null;
+    if (pending?.path && pending?.rootId === props.currentRoot?.id) {
+      currentPath.value = pending.path;
+    }
     loadList({ reset: true });
   },
   { immediate: true }
+);
+
+watch(
+  [() => props.navState, () => props.currentRoot],
+  ([value, current]) => {
+    if (!current || !value || typeof value.path !== 'string') {
+      return;
+    }
+    if (value.rootId && value.rootId !== current.id) {
+      return;
+    }
+    if (value.token && value.token === lastNavToken.value) {
+      return;
+    }
+    lastNavToken.value = value.token || Date.now();
+    const nextPath = value.path;
+    if (currentPath.value === nextPath) {
+      return;
+    }
+    currentPath.value = nextPath;
+    searchQuery.value = '';
+    loadList({ reset: true });
+  },
+  { deep: true }
 );
 
 watch(
@@ -389,27 +558,12 @@ watch(modalOpen, (value) => {
 });
 
 onMounted(() => {
-  observer = new IntersectionObserver((entries) => {
-    if (entries[0].isIntersecting) {
-      loadMore();
-    }
-  });
-  if (sentinel.value) {
-    observer.observe(sentinel.value);
-  }
   window.addEventListener('keydown', handleKey);
 });
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKey);
   document.body.style.overflow = '';
-});
-
-watch(sentinel, (value) => {
-  if (!observer || !value) {
-    return;
-  }
-  observer.observe(value);
 });
 
 function handleKey(event) {
@@ -431,7 +585,7 @@ function handleKey(event) {
 </script>
 
 <template>
-  <section class="layout">
+  <section class="layout" :class="{ 'sidebar-open': sidebarOpen }">
     <aside class="sidebar">
       <h3>Storage Roots</h3>
       <button
@@ -439,11 +593,12 @@ function handleKey(event) {
         :key="root.id"
         class="root-btn"
         :class="{ active: currentRoot?.id === root.id }"
-        @click="onSelectRoot(root)"
+        @click="handleRootSelect(root)"
       >
         {{ root.name }}
       </button>
     </aside>
+    <div class="sidebar-scrim" @click="closeSidebar"></div>
 
     <main class="browser">
       <div class="toolbar">
@@ -453,6 +608,7 @@ function handleKey(event) {
               v-for="(crumb, index) in breadcrumbs"
               :key="crumb.path || index"
               @click="goToCrumb(crumb)"
+              @contextmenu.prevent="openBreadcrumbMenu($event, crumb, index)"
             >
               {{ crumb.name }}
               <span v-if="index < breadcrumbs.length - 1">/</span>
@@ -461,12 +617,27 @@ function handleKey(event) {
           <span class="meta" v-if="isSearchMode">Search - {{ searchResults.length }} results</span>
         </div>
         <div class="toolbar-actions">
+          <button class="icon-btn sidebar-toggle" @click="toggleSidebar" aria-label="Toggle sidebar">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+          <button
+            class="icon-btn"
+            @click="refreshPath(currentPath)"
+            :disabled="!currentRoot"
+            aria-label="Refresh this folder"
+          >
+            <i class="fa-solid fa-rotate-right"></i>
+          </button>
           <input
             class="search"
             type="search"
             placeholder="Search files"
             v-model="searchQuery"
           />
+          <label class="search-scope">
+            <input type="checkbox" v-model="searchAllRoots" />
+            <span>All roots</span>
+          </label>
           <button class="action-btn secondary" @click="downloadZip" :disabled="!selectionCount">
             Download ({{ selectionCount }})
           </button>
@@ -496,15 +667,19 @@ function handleKey(event) {
         </div>
         <div
           v-for="(item, index) in displayItems"
-          :key="item.path"
+          :key="itemKey(item)"
           class="list-row"
-          :class="{ selected: selectedPaths.includes(item.path) }"
-            @click="handleItemClick(item, $event)"
-            :style="{ animationDelay: `${index * 20}ms` }"
+          :class="{ selected: isSelected(item) }"
+          @click="handleItemClick(item, $event)"
+          @contextmenu.prevent="openItemMenu($event, item)"
+          :style="{ animationDelay: `${index * 20}ms` }"
           >
             <div class="name-cell">
               <span class="icon"><i :class="iconClass(item)"></i></span>
-              <strong>{{ item.name }}</strong>
+              <div class="name-stack">
+                <strong>{{ item.name }}</strong>
+                <div v-if="isSearchMode" class="item-path">{{ item.path }}</div>
+              </div>
             </div>
           <div>{{ item.isDir ? '--' : formatSize(item.size) }}</div>
           <div>{{ formatDate(item.mtime) }}</div>
@@ -515,16 +690,27 @@ function handleKey(event) {
       <div v-else class="grid">
         <div
           v-for="item in displayItems"
-          :key="item.path"
+          :key="itemKey(item)"
           class="grid-card"
-          :class="{ selected: selectedPaths.includes(item.path) }"
-            @click="handleItemClick(item, $event)"
+          :class="{ selected: isSelected(item) }"
+          @click="handleItemClick(item, $event)"
+          @contextmenu.prevent="openItemMenu($event, item)"
           >
             <div class="grid-thumb">
-              <img v-if="isImage(item)" :src="previewUrl(rootId, item.path)" :alt="item.name" />
+              <img
+                v-if="isImage(item) && !hasImageError(item, 'thumb')"
+                :src="previewUrl(itemRootId(item), item.path)"
+                :alt="item.name"
+                @error="markImageError(item, 'thumb')"
+              />
+              <div v-else-if="isImage(item)" class="media-fallback compact">
+                <i class="fa-solid fa-file-circle-xmark"></i>
+                <span>{{ item.ext?.replace('.', '').toUpperCase() || 'FILE' }}</span>
+              </div>
               <span v-else class="icon"><i :class="iconClass(item)"></i></span>
             </div>
             <strong>{{ item.name }}</strong>
+            <div v-if="isSearchMode" class="item-path">{{ item.path }}</div>
           <div class="meta">{{ item.isDir ? 'Folder' : formatSize(item.size) }}</div>
         </div>
       </div>
@@ -539,13 +725,21 @@ function handleKey(event) {
       <h3>Preview</h3>
       <div v-if="activeItem" class="preview-media">
         <img
-          v-if="isImage(activeItem)"
-          :src="previewUrl(rootId, activeItem.path)"
+          v-if="isImage(activeItem) && !hasImageError(activeItem, 'panel')"
+          :src="previewUrl(itemRootId(activeItem), activeItem.path)"
           :alt="activeItem.name"
+          @error="markImageError(activeItem, 'panel')"
         />
+        <div v-else-if="isImage(activeItem)" class="media-fallback">
+          <i class="fa-solid fa-file-circle-xmark"></i>
+          <div>Preview unavailable</div>
+          <div class="media-fallback-meta">
+            {{ activeItem.ext?.replace('.', '').toUpperCase() || 'FILE' }}
+          </div>
+        </div>
         <video
           v-else-if="isVideo(activeItem)"
-          :src="fileUrl(rootId, activeItem.path)"
+          :src="fileUrl(itemRootId(activeItem), activeItem.path)"
           controls
         />
         <div v-else class="icon"><i :class="iconClass(activeItem)"></i></div>
@@ -560,7 +754,7 @@ function handleKey(event) {
       <a
         v-if="activeItem && !activeItem.isDir"
         class="action-btn"
-        :href="fileUrl(rootId, activeItem.path)"
+        :href="downloadUrl(itemRootId(activeItem), activeItem.path)"
       >
         Download File
       </a>
@@ -575,7 +769,11 @@ function handleKey(event) {
       <button v-if="isImage(modalItem)" class="icon-btn" @click="zoomIn" aria-label="Zoom in">
         <i class="fa-solid fa-magnifying-glass-plus"></i>
       </button>
-      <a class="icon-btn" :href="fileUrl(rootId, modalItem.path)" aria-label="Download">
+      <a
+        class="icon-btn"
+        :href="downloadUrl(itemRootId(modalItem), modalItem.path)"
+        aria-label="Download"
+      >
         <i class="fa-solid fa-download"></i>
       </a>
       <button class="icon-btn" @click="closeModal" aria-label="Close">
@@ -583,20 +781,33 @@ function handleKey(event) {
       </button>
     </div>
 
-    <div class="photo-modal-stage">
+    <div class="photo-modal-stage" @click.self="closeModal">
       <img
-        v-if="isImage(modalItem)"
-        :src="fileUrl(rootId, modalItem.path)"
+        v-if="isImage(modalItem) && !hasImageError(modalItem, 'modal')"
+        :src="fileUrl(itemRootId(modalItem), modalItem.path)"
         :alt="modalItem.name"
         :style="{ transform: `scale(${zoomLevel})` }"
+        @error="markImageError(modalItem, 'modal')"
       />
-      <video v-else-if="isVideo(modalItem)" :src="fileUrl(rootId, modalItem.path)" controls></video>
+      <div v-else-if="isImage(modalItem)" class="media-fallback">
+        <i class="fa-solid fa-file-circle-xmark"></i>
+        <div>Preview unavailable</div>
+        <div class="media-fallback-meta">
+          {{ modalItem.ext?.replace('.', '').toUpperCase() || 'FILE' }}
+        </div>
+      </div>
+      <video
+        v-else-if="isVideo(modalItem)"
+        :src="fileUrl(itemRootId(modalItem), modalItem.path)"
+        controls
+      ></video>
       <MiniPlayer
         v-else-if="isAudio(modalItem)"
         :tracks="audioQueue"
         :selected-track="modalAudioTrack"
-        :root-id="rootId"
+        :root-id="itemRootId(modalItem)"
         :auto-play="true"
+        :auto-play-on-mount="true"
         variant="embedded"
         @select="handleModalPlayerSelect"
       />
@@ -610,5 +821,58 @@ function handleKey(event) {
       <div>Size: {{ formatSize(modalItem.size) }}</div>
       <div>Modified: {{ formatDate(modalItem.mtime) }}</div>
     </div>
+  </div>
+
+  <div
+    v-if="breadcrumbMenu.open"
+    class="context-menu"
+    :style="{ top: `${breadcrumbMenu.y}px`, left: `${breadcrumbMenu.x}px` }"
+  >
+    <button class="context-menu-item" @click="refreshPath(breadcrumbMenu.path)">
+      <i class="fa-solid fa-rotate-right"></i>
+      Refresh this folder
+    </button>
+    <button class="context-menu-item" @click="forceRehashPath(breadcrumbMenu.path)">
+      <i class="fa-solid fa-bolt"></i>
+      Force full rehash
+    </button>
+  </div>
+
+  <div
+    v-if="itemMenu.open"
+    class="context-menu"
+    :style="{ top: `${itemMenu.y}px`, left: `${itemMenu.x}px` }"
+  >
+    <button
+      class="context-menu-item"
+      @click="handleItemDownload(itemMenu.item)"
+    >
+      <i class="fa-solid fa-download"></i>
+      Download
+    </button>
+    <button
+      v-if="itemMenu.item && isAudio(itemMenu.item)"
+      class="context-menu-item"
+      @click="handleOpenInMusic(itemMenu.item)"
+    >
+      <i class="fa-solid fa-music"></i>
+      Open in Music
+    </button>
+    <button
+      v-if="itemMenu.item && isImage(itemMenu.item)"
+      class="context-menu-item"
+      @click="handleOpenInPhotos(itemMenu.item)"
+    >
+      <i class="fa-solid fa-image"></i>
+      Open in Photos
+    </button>
+    <button
+      v-if="selectionCount > 1"
+      class="context-menu-item"
+      @click="handleDownloadSelection"
+    >
+      <i class="fa-solid fa-file-zipper"></i>
+      Download selection ({{ selectionCount }})
+    </button>
   </div>
 </template>

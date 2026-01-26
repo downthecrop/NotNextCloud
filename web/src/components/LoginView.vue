@@ -26,7 +26,10 @@ async function submit() {
 <template>
   <div class="login-screen">
     <form class="login-card" @submit.prevent="submit">
-      <h2>Local Cloud</h2>
+      <div class="login-brand" aria-label="Local Cloud">
+        <span class="sr-only">Local Cloud</span>
+        <i class="fa-solid fa-cloud"></i>
+      </div>
       <div class="meta">Sign in to browse your local storage roots.</div>
       <input v-model="user" placeholder="Username" autocomplete="username" />
       <input v-model="pass" type="password" placeholder="Password" autocomplete="current-password" />

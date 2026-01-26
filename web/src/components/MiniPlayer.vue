@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch, nextTick } from 'vue';
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import { useApi } from '../composables/useApi';
 
 const props = defineProps({
@@ -19,6 +19,10 @@ const props = defineProps({
     type: Boolean,
     default: true,
   },
+  autoPlayOnMount: {
+    type: Boolean,
+    default: false,
+  },
   variant: {
     type: String,
     default: 'bar',
@@ -36,13 +40,18 @@ const isPlaying = ref(false);
 const volume = ref(0.8);
 const muted = ref(false);
 const albumArtOk = ref(true);
+const volumeOpen = ref(false);
+const volumeRef = ref(null);
+let volumeTimer = null;
 
 const queue = computed(() => props.tracks || []);
+const selectedRootId = computed(() => props.selectedTrack?.rootId || props.rootId || '');
 const currentIndex = computed(() => {
   if (!props.selectedTrack) {
     return -1;
   }
-  return queue.value.findIndex((item) => item.path === props.selectedTrack.path);
+  const selectedKey = trackKey(props.selectedTrack);
+  return queue.value.findIndex((item) => trackKey(item) === selectedKey);
 });
 const effectiveDuration = computed(() => {
   const fallback = props.selectedTrack?.duration || 0;
@@ -64,6 +73,14 @@ function trackArtist(item) {
 
 function trackAlbum(item) {
   return item?.album || 'Unknown Album';
+}
+
+function trackRootId(item) {
+  return item?.rootId || props.rootId || '';
+}
+
+function trackKey(item) {
+  return item?.rootId ? `${item.rootId}:${item.path}` : item?.path;
 }
 
 function formatTime(value) {
@@ -168,6 +185,54 @@ function onDurationChange() {
   duration.value = Number.isFinite(nextDuration) ? nextDuration : duration.value;
 }
 
+function clearVolumeTimer() {
+  if (volumeTimer) {
+    clearTimeout(volumeTimer);
+    volumeTimer = null;
+  }
+}
+
+function scheduleVolumeClose() {
+  clearVolumeTimer();
+  volumeTimer = setTimeout(() => {
+    volumeOpen.value = false;
+  }, 2000);
+}
+
+function openVolume() {
+  volumeOpen.value = true;
+  scheduleVolumeClose();
+}
+
+function keepVolumeOpen() {
+  if (!volumeOpen.value) {
+    volumeOpen.value = true;
+  }
+  scheduleVolumeClose();
+}
+
+function closeVolume() {
+  scheduleVolumeClose();
+}
+
+function handleVolumeFocusOut(event) {
+  if (event?.currentTarget?.contains(event?.relatedTarget)) {
+    return;
+  }
+  scheduleVolumeClose();
+}
+
+function handleGlobalPointer(event) {
+  if (!volumeOpen.value || !volumeRef.value) {
+    return;
+  }
+  if (volumeRef.value.contains(event.target)) {
+    return;
+  }
+  clearVolumeTimer();
+  volumeOpen.value = false;
+}
+
 function onVolumeInput(event) {
   const nextValue = parseFloat(event.target.value || '0');
   volume.value = nextValue;
@@ -180,6 +245,11 @@ function onVolumeInput(event) {
       audioRef.value.muted = false;
     }
   }
+}
+
+function handleVolumeInput(event) {
+  onVolumeInput(event);
+  keepVolumeOpen();
 }
 
 function toggleMute() {
@@ -208,6 +278,20 @@ watch(
     }
   }
 );
+
+onMounted(() => {
+  document.addEventListener('pointerdown', handleGlobalPointer);
+  if (props.autoPlayOnMount && props.autoPlay && props.selectedTrack) {
+    nextTick(() => {
+      audioRef.value?.play().catch(() => {});
+    });
+  }
+});
+
+onUnmounted(() => {
+  clearVolumeTimer();
+  document.removeEventListener('pointerdown', handleGlobalPointer);
+});
 </script>
 
 <template>
@@ -216,7 +300,7 @@ watch(
       <div class="player-bar-art">
         <img
           v-if="selectedTrack?.albumKey && albumArtOk"
-          :src="albumArtUrl(rootId, selectedTrack.albumKey)"
+          :src="albumArtUrl(selectedRootId, selectedTrack.albumKey)"
           :alt="trackAlbum(selectedTrack)"
           @error="albumArtOk = false"
         />
@@ -261,26 +345,38 @@ watch(
           <i class="fa-solid fa-forward-step"></i>
         </button>
       </div>
-      <div class="player-bar-volume">
+      <div
+        class="player-bar-volume"
+        :class="{ 'volume-active': volumeOpen }"
+        ref="volumeRef"
+        @mouseenter="openVolume"
+        @mouseleave="closeVolume"
+        @focusin="openVolume"
+        @focusout="handleVolumeFocusOut"
+        @pointerdown="openVolume"
+        @pointermove="keepVolumeOpen"
+      >
         <button class="icon-btn" @click="toggleMute" :disabled="!selectedTrack" aria-label="Mute">
           <i :class="muted || volume === 0 ? 'fa-solid fa-volume-xmark' : 'fa-solid fa-volume-high'"></i>
         </button>
-        <input
-          class="volume-slider"
-          type="range"
-          min="0"
-          max="1"
-          step="0.01"
-          :value="volume"
-          @input="onVolumeInput"
-          :disabled="!selectedTrack"
-          aria-label="Volume"
-        />
+        <div class="volume-popover">
+          <input
+            class="volume-slider"
+            type="range"
+            min="0"
+            max="1"
+            step="0.01"
+            :value="volume"
+            @input="handleVolumeInput"
+            :disabled="!selectedTrack"
+            aria-label="Volume"
+          />
+        </div>
       </div>
     </div>
     <audio
       ref="audioRef"
-      :src="selectedTrack ? fileUrl(rootId, selectedTrack.path) : ''"
+      :src="selectedTrack ? fileUrl(trackRootId(selectedTrack), selectedTrack.path) : ''"
       preload="metadata"
       @timeupdate="onTimeUpdate"
       @loadedmetadata="onLoadedMetadata"

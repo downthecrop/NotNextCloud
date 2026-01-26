@@ -18,6 +18,11 @@ export function useApi() {
   const previewUrl = (rootId, path) =>
     withToken(`/api/preview?root=${encodeURIComponent(rootId)}&path=${encodeURIComponent(path)}`);
 
+  const downloadUrl = (rootId, path) =>
+    withToken(
+      `/api/file?root=${encodeURIComponent(rootId)}&path=${encodeURIComponent(path)}&download=1`
+    );
+
   const albumArtUrl = (rootId, key) =>
     withToken(`/api/album-art?root=${encodeURIComponent(rootId)}&key=${encodeURIComponent(key)}`);
 
@@ -27,6 +32,7 @@ export function useApi() {
     withToken,
     fileUrl,
     previewUrl,
+    downloadUrl,
     albumArtUrl,
   };
 }

@@ -1,6 +1,16 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import { useApi } from '../composables/useApi';
+import { useDownloads } from '../composables/useDownloads';
+import { useImageErrors } from '../composables/useImageErrors';
+import { useInfiniteScroll } from '../composables/useInfiniteScroll';
+import { useMenu, useGlobalMenuClose } from '../composables/useMenu';
+import { useMultiSelect } from '../composables/useMultiSelect';
+import { useSort } from '../composables/useSort';
+import { useSidebar } from '../composables/useSidebar';
+import { formatDate, formatSize } from '../utils/formatting';
+import { itemKey as buildItemKey } from '../utils/itemKey';
+import { isImage, isVideo } from '../utils/media';
 
 const props = defineProps({
   roots: {
@@ -15,13 +25,26 @@ const props = defineProps({
     type: Number,
     required: true,
   },
+  jumpTo: {
+    type: Object,
+    default: null,
+  },
   onSelectRoot: {
     type: Function,
     required: true,
   },
+  onOpenInFiles: {
+    type: Function,
+    default: null,
+  },
 });
 
-const { apiFetch, fileUrl, previewUrl } = useApi();
+const { apiFetch, fileUrl, previewUrl, downloadUrl } = useApi();
+const { downloadGrouped } = useDownloads();
+const { sortDir, setSort, sortList, compareText } = useSort({
+  initialKey: 'date',
+  initialDir: 'desc',
+});
 
 const items = ref([]);
 const total = ref(0);
@@ -41,11 +64,25 @@ const selectedAlbumId = ref(null);
 const albumCounter = ref(1);
 const photoPins = ref([]);
 const activePin = ref(null);
-const contextMenu = ref({ open: false, x: 0, y: 0, item: null });
-const sentinel = ref(null);
-let observer = null;
+const jumpTarget = ref(null);
+const startDate = ref('');
+const endDate = ref('');
+const {
+  menu: contextMenu,
+  openMenu: openContextMenuBase,
+  closeMenu: closeContextMenu,
+} = useMenu({ item: null });
+const { sidebarOpen, toggleSidebar, closeSidebar } = useSidebar();
+useGlobalMenuClose(closeContextMenu);
 
 const rootId = computed(() => props.currentRoot?.id || '');
+function itemKey(item) {
+  return buildItemKey(item);
+}
+
+const { hasImageError, markImageError, resetImageErrors } = useImageErrors({
+  getKey: (item) => `${itemRootId(item)}:${item?.path || ''}`,
+});
 const isSearchMode = computed(() => Boolean(searchQuery.value.trim()));
 const displayItems = computed(() => (isSearchMode.value ? searchResults.value : items.value));
 const selectedAlbum = computed(
@@ -53,8 +90,8 @@ const selectedAlbum = computed(
 );
 const isAlbumDetail = computed(() => Boolean(selectedAlbum.value));
 const albumItems = computed(() => selectedAlbum.value?.items || []);
-const modalItems = computed(() => (isAlbumDetail.value ? albumItems.value : displayItems.value));
 const activePinPath = computed(() => activePin.value?.path || '');
+const sortLabel = computed(() => (sortDir.value === 'desc' ? 'Newest' : 'Oldest'));
 const hasMore = computed(() => {
   if (isAlbumDetail.value) {
     return false;
@@ -65,6 +102,75 @@ const hasMore = computed(() => {
   return items.value.length < total.value;
 });
 
+const selectionItems = computed(() =>
+  isAlbumDetail.value ? sortedAlbumItems.value : sortedItems.value
+);
+const {
+  selectedKeys: selectedItemKeys,
+  clearSelection,
+  setSingleSelection,
+  toggleSelection,
+  selectRange,
+  isSelected,
+} = useMultiSelect({
+  getItems: () => selectionItems.value,
+  getKey: (item) => itemKey(item),
+});
+const selectionCount = computed(() => selectedItemKeys.value.length);
+
+function dateBounds() {
+  let startMs = null;
+  let endMs = null;
+  if (startDate.value) {
+    const start = new Date(startDate.value);
+    start.setHours(0, 0, 0, 0);
+    startMs = start.getTime();
+  }
+  if (endDate.value) {
+    const end = new Date(endDate.value);
+    end.setHours(23, 59, 59, 999);
+    endMs = end.getTime();
+  }
+  return { startMs, endMs };
+}
+
+function filterByDate(list) {
+  const { startMs, endMs } = dateBounds();
+  if (!startMs && !endMs) {
+    return list;
+  }
+  return list.filter((item) => {
+    const time = Number(item?.mtime) || 0;
+    if (startMs && time < startMs) {
+      return false;
+    }
+    if (endMs && time > endMs) {
+      return false;
+    }
+    return true;
+  });
+}
+
+const filteredItems = computed(() => filterByDate(displayItems.value));
+const filteredAlbumItems = computed(() => filterByDate(albumItems.value));
+
+const sortedItems = computed(() =>
+  sortList(filteredItems.value, {
+    getValue: (item) => Number(item?.mtime) || 0,
+    numericKeys: ['date'],
+    tieBreak: (a, b) => compareText(a?.name, b?.name),
+  })
+);
+const sortedAlbumItems = computed(() =>
+  sortList(filteredAlbumItems.value, {
+    getValue: (item) => Number(item?.mtime) || 0,
+    numericKeys: ['date'],
+    tieBreak: (a, b) => compareText(a?.name, b?.name),
+  })
+);
+
+const modalItems = computed(() => (isAlbumDetail.value ? sortedAlbumItems.value : sortedItems.value));
+
 const timelineGroups = computed(() => {
   const groups = [];
   const formatter = new Intl.DateTimeFormat('en-US', {
@@ -73,7 +179,7 @@ const timelineGroups = computed(() => {
     year: 'numeric',
   });
   let currentLabel = '';
-  for (const item of displayItems.value) {
+  for (const item of sortedItems.value) {
     const label = formatter.format(new Date(item.mtime));
     if (!groups.length || label !== currentLabel) {
       groups.push({ label, items: [] });
@@ -84,37 +190,12 @@ const timelineGroups = computed(() => {
   return groups;
 });
 
-function isImage(item) {
-  return item?.mime?.startsWith('image/');
+function itemRootId(item) {
+  return item?.rootId || rootId.value;
 }
 
-function isVideo(item) {
-  return item?.mime?.startsWith('video/');
-}
-
-function tileClass() {
-  return 'tile';
-}
-
-function formatSize(bytes) {
-  if (!bytes && bytes !== 0) {
-    return '';
-  }
-  if (bytes === 0) {
-    return '0 B';
-  }
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const size = Math.floor(Math.log(bytes) / Math.log(1024));
-  const value = bytes / Math.pow(1024, size);
-  return `${value.toFixed(value < 10 ? 1 : 0)} ${units[size]}`;
-}
-
-function formatDate(value) {
-  if (!value) {
-    return '';
-  }
-  const date = new Date(value);
-  return date.toLocaleString();
+function tileClass(item) {
+  return ['tile', { selected: isSelected(item) }];
 }
 
 function openModal(item) {
@@ -135,6 +216,21 @@ function setModalItem(item) {
   modalItem.value = item;
   selectedItem.value = item;
   zoomLevel.value = 1;
+}
+
+function handleItemClick(item, event) {
+  const hasMeta = event?.metaKey || event?.ctrlKey;
+  const hasShift = event?.shiftKey;
+  if (hasShift) {
+    selectRange(item, { additive: hasMeta });
+    return;
+  }
+  if (hasMeta) {
+    toggleSelection(item);
+    return;
+  }
+  setSingleSelection(item);
+  openModal(item);
 }
 
 function navigateModal(delta) {
@@ -311,17 +407,127 @@ function clearPin() {
   activePin.value = null;
 }
 
-function closeContextMenu() {
-  contextMenu.value = { open: false, x: 0, y: 0, item: null };
+function handleAlbumClear() {
+  clearAlbumSelection();
+  closeSidebar();
+}
+
+function handleCreateAlbum() {
+  selectAlbum(ensureDraftAlbum());
+  closeSidebar();
+}
+
+function handleAlbumSelect(album) {
+  selectAlbum(album);
+  closeSidebar();
+}
+
+function handlePinClear() {
+  clearPin();
+  closeSidebar();
+}
+
+function handlePinSelect(pin) {
+  selectPin(pin);
+  closeSidebar();
 }
 
 function openContextMenu(event, item) {
-  contextMenu.value = {
-    open: true,
-    x: event.clientX,
-    y: event.clientY,
-    item,
+  if (!isSelected(item)) {
+    setSingleSelection(item);
+  }
+  openContextMenuBase(event, { item });
+}
+
+async function downloadSelection(items, label) {
+  const targets = Array.isArray(items) ? items : [];
+  if (!targets.length) {
+    return;
+  }
+  await downloadGrouped({
+    items: targets,
+    getRootId: (item) => itemRootId(item),
+    getPath: (item) => item.path,
+    getName: (item) => item.name || 'photo',
+    zipLabel: label,
+  });
+}
+
+async function handleDownloadSelection() {
+  const selected = getSelectedItems();
+  if (!selected.length) {
+    return;
+  }
+  const label = isAlbumDetail.value ? selectedAlbum.value?.name || 'album' : 'photos';
+  await downloadSelection(selected, label);
+  closeContextMenu();
+}
+
+async function handleDownloadAlbum() {
+  if (!sortedAlbumItems.value.length) {
+    return;
+  }
+  await downloadSelection(sortedAlbumItems.value, selectedAlbum.value?.name || 'album');
+}
+
+function handleOpenInFiles(item) {
+  if (!item?.path || !props.onOpenInFiles) {
+    return;
+  }
+  const parts = item.path.split('/');
+  parts.pop();
+  const pathValue = parts.join('/');
+  props.onOpenInFiles({ rootId: itemRootId(item), path: pathValue });
+  closeContextMenu();
+}
+
+function applyJump(jump) {
+  if (!jump?.path) {
+    return;
+  }
+  const parts = jump.path.split('/');
+  parts.pop();
+  const pathValue = parts.join('/');
+  if (pathValue) {
+    activePin.value = {
+      id: `jump-${jump.token || Date.now()}`,
+      path: pathValue,
+      label: pinLabel(pathValue),
+    };
+  } else {
+    activePin.value = null;
+  }
+  selectedAlbumId.value = null;
+  jumpTarget.value = {
+    rootId: jump.rootId || null,
+    path: jump.path,
+    token: jump.token || Date.now(),
   };
+}
+
+function attemptJumpOpen() {
+  if (!jumpTarget.value?.path) {
+    return;
+  }
+  const match = displayItems.value.find(
+    (item) =>
+      item?.path === jumpTarget.value.path &&
+      (!jumpTarget.value.rootId || itemRootId(item) === jumpTarget.value.rootId)
+  );
+  if (!match) {
+    return;
+  }
+  openModal(match);
+  jumpTarget.value = null;
+}
+
+function getSelectedItems() {
+  const list = selectionItems.value;
+  if (!list.length || !selectedItemKeys.value.length) {
+    return [];
+  }
+  const byKey = new Map(list.map((entry) => [itemKey(entry), entry]));
+  return selectedItemKeys.value.map((key) => byKey.get(key)).filter(Boolean);
 }
 
 async function loadPhotos({ reset = true } = {}) {
@@ -332,6 +538,7 @@ async function loadPhotos({ reset = true } = {}) {
     offset.value = 0;
     total.value = 0;
     items.value = [];
+    clearSelection();
   }
   loading.value = true;
   error.value = '';
@@ -409,6 +616,8 @@ async function loadMore() {
   }
 }
 
+const { sentinel } = useInfiniteScroll(loadMore);
+
 let searchTimer = null;
 watch(searchQuery, () => {
   clearTimeout(searchTimer);
@@ -427,6 +636,7 @@ watch(
     selectedItem.value = null;
     modalItem.value = null;
     modalOpen.value = false;
+    resetImageErrors();
     selectedAlbumId.value = null;
     activePin.value = null;
     loadPhotos({ reset: true });
@@ -445,52 +655,63 @@ watch(
   }
 );
 
+watch(
+  () => props.roots,
+  () => {
+    if (props.currentRoot?.id === '__all__') {
+      loadPhotos({ reset: true });
+    }
+  }
+);
+
+watch(
+  () => props.jumpTo?.token,
+  () => {
+    if (props.jumpTo?.path) {
+      applyJump(props.jumpTo);
+    }
+  },
+  { immediate: true }
+);
+
 watch(modalOpen, (value) => {
   document.body.style.overflow = value ? 'hidden' : '';
+});
+
+watch([searchQuery, startDate, endDate, selectedAlbumId], () => {
+  clearSelection();
 });
 
 onMounted(() => {
   loadAlbums();
   loadPins();
-  observer = new IntersectionObserver((entries) => {
-    if (entries[0].isIntersecting) {
-      loadMore();
-    }
-  });
-  if (sentinel.value) {
-    observer.observe(sentinel.value);
-  }
   window.addEventListener('keydown', handleKey);
-  window.addEventListener('click', closeContextMenu);
-  window.addEventListener('scroll', closeContextMenu, true);
 });
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKey);
-  window.removeEventListener('click', closeContextMenu);
-  window.removeEventListener('scroll', closeContextMenu, true);
   document.body.style.overflow = '';
 });
 
-watch(sentinel, (value) => {
-  if (!observer || !value) {
-    return;
+watch(
+  () => displayItems.value,
+  () => {
+    attemptJumpOpen();
   }
-  observer.observe(value);
-});
+);
 </script>
 
 <template>
-  <section class="layout layout-wide photos-layout">
+  <section class="layout layout-wide photos-layout" :class="{ 'sidebar-open': sidebarOpen }">
     <aside class="sidebar">
       <h3>Photos</h3>
       <div class="sidebar-section">
         <div class="sidebar-title">Albums</div>
-        <button class="sidebar-item" :class="{ active: !selectedAlbumId }" @click="clearAlbumSelection">
+        <button class="sidebar-item" :class="{ active: !selectedAlbumId }" @click="handleAlbumClear">
           <span class="icon"><i class="fa-regular fa-images"></i></span>
           All photos
         </button>
-        <button class="sidebar-item" @click="selectAlbum(ensureDraftAlbum())">
+        <button class="sidebar-item" @click="handleCreateAlbum">
           <span class="icon"><i class="fa-solid fa-plus"></i></span>
           Create album
         </button>
@@ -499,7 +720,7 @@ watch(sentinel, (value) => {
           :key="album.id"
           class="sidebar-item"
           :class="{ active: selectedAlbumId === album.id }"
-          @click="selectAlbum(album)"
+          @click="handleAlbumSelect(album)"
         >
           <span class="icon"><i class="fa-solid fa-photo-film"></i></span>
           <span class="sidebar-label">{{ album.name }}</span>
@@ -509,7 +730,7 @@ watch(sentinel, (value) => {
       </div>
       <div class="sidebar-section">
         <div class="sidebar-title">Pinned</div>
-        <button class="sidebar-item" :class="{ active: !activePin }" @click="clearPin">
+        <button class="sidebar-item" :class="{ active: !activePin }" @click="handlePinClear">
           <span class="icon"><i class="fa-regular fa-bookmark"></i></span>
           All locations
         </button>
@@ -518,7 +739,7 @@ watch(sentinel, (value) => {
           :key="pin.id"
           class="sidebar-item"
           :class="{ active: activePin?.id === pin.id }"
-          @click="selectPin(pin)"
+          @click="handlePinSelect(pin)"
         >
           <span class="icon"><i class="fa-solid fa-location-dot"></i></span>
           <span class="sidebar-label">{{ pin.label }}</span>
@@ -526,11 +747,15 @@ watch(sentinel, (value) => {
         <div v-if="!photoPins.length" class="sidebar-hint">Right-click a photo to pin.</div>
       </div>
     </aside>
+    <div class="sidebar-scrim" @click="closeSidebar"></div>
 
     <main class="browser photos-browser">
       <div class="toolbar">
         <div class="toolbar-title">
           <div class="toolbar-line">
+            <button class="icon-btn sidebar-toggle" @click="toggleSidebar" aria-label="Toggle sidebar">
+              <i class="fa-solid fa-bars"></i>
+            </button>
             <button v-if="selectedAlbum" class="action-btn secondary" @click="clearAlbumSelection">
               <i class="fa-solid fa-arrow-left"></i>
               Back
@@ -538,17 +763,34 @@ watch(sentinel, (value) => {
             <strong>{{ selectedAlbum ? selectedAlbum.name : 'Photos' }}</strong>
             <span class="meta" v-if="selectedAlbum"> - {{ albumItems.length }} items</span>
             <span class="meta" v-else>
-              - {{ displayItems.length }} of {{ isSearchMode ? searchTotal : total }}
+              - {{ sortedItems.length }} of {{ isSearchMode ? searchTotal : total }}
             </span>
           </div>
         </div>
-        <div class="toolbar-actions" v-if="!selectedAlbum">
+        <div class="toolbar-actions">
           <input
+            v-if="!selectedAlbum"
             class="search"
             type="search"
             placeholder="Search photos and videos"
             v-model="searchQuery"
           />
+          <div class="date-filter">
+            <input type="date" v-model="startDate" aria-label="Start date" />
+            <span>–</span>
+            <input type="date" v-model="endDate" aria-label="End date" />
+          </div>
+          <button class="action-btn secondary" @click="setSort('date')">
+            <i class="fa-solid fa-arrow-down-wide-short"></i>
+            {{ sortLabel }}
+          </button>
+          <button
+            v-if="selectionCount"
+            class="action-btn secondary"
+            @click="handleDownloadSelection"
+          >
+            Download ({{ selectionCount }})
+          </button>
         </div>
       </div>
 
@@ -564,20 +806,25 @@ watch(sentinel, (value) => {
           <div class="timeline-grid">
             <div
               v-for="(item, index) in group.items"
-              :key="item.path"
-              :class="tileClass(index)"
-              @click="openModal(item)"
+              :key="itemKey(item)"
+              :class="tileClass(item)"
+              @click="handleItemClick(item, $event)"
               @contextmenu.prevent="openContextMenu($event, item)"
             >
               <img
-                v-if="isImage(item)"
-                :src="previewUrl(rootId, item.path)"
+                v-if="isImage(item) && !hasImageError(item, 'tile')"
+                :src="previewUrl(itemRootId(item), item.path)"
                 :alt="item.name"
                 loading="lazy"
+                @error="markImageError(item, 'tile')"
               />
+              <div v-else-if="isImage(item)" class="tile-fallback media-fallback compact">
+                <i class="fa-solid fa-file-circle-xmark"></i>
+                <span>{{ item.ext?.replace('.', '').toUpperCase() || 'FILE' }}</span>
+              </div>
               <video
                 v-else-if="isVideo(item)"
-                :src="fileUrl(rootId, item.path)"
+                :src="fileUrl(itemRootId(item), item.path)"
                 muted
                 playsinline
                 preload="metadata"
@@ -603,6 +850,14 @@ watch(sentinel, (value) => {
               <i class="fa-solid fa-floppy-disk"></i>
               Save
             </button>
+            <button
+              class="action-btn secondary"
+              @click="handleDownloadAlbum"
+              :disabled="!sortedAlbumItems.length"
+            >
+              <i class="fa-solid fa-download"></i>
+              Download album
+            </button>
             <button class="action-btn secondary" @click="clearAlbum">
               <i class="fa-solid fa-trash"></i>
               Clear
@@ -612,21 +867,26 @@ watch(sentinel, (value) => {
         <div v-if="!albumItems.length" class="empty-state">This album is empty.</div>
         <div v-else class="photo-album-grid">
           <div
-            v-for="(item, index) in albumItems"
-            :key="item.path"
-            :class="tileClass(index)"
-            @click="openModal(item)"
+            v-for="(item, index) in sortedAlbumItems"
+            :key="itemKey(item)"
+            :class="tileClass(item)"
+            @click="handleItemClick(item, $event)"
             @contextmenu.prevent="openContextMenu($event, item)"
           >
             <img
-              v-if="isImage(item)"
-              :src="previewUrl(rootId, item.path)"
+              v-if="isImage(item) && !hasImageError(item, 'album')"
+              :src="previewUrl(itemRootId(item), item.path)"
               :alt="item.name"
               loading="lazy"
+              @error="markImageError(item, 'album')"
             />
+            <div v-else-if="isImage(item)" class="tile-fallback media-fallback compact">
+              <i class="fa-solid fa-file-circle-xmark"></i>
+              <span>{{ item.ext?.replace('.', '').toUpperCase() || 'FILE' }}</span>
+            </div>
             <video
               v-else-if="isVideo(item)"
-              :src="fileUrl(rootId, item.path)"
+              :src="fileUrl(itemRootId(item), item.path)"
               muted
               playsinline
               preload="metadata"
@@ -659,6 +919,14 @@ watch(sentinel, (value) => {
       <i class="fa-regular fa-bookmark"></i>
       Pin location
     </button>
+    <button class="context-menu-item" @click="handleOpenInFiles(contextMenu.item)">
+      <i class="fa-solid fa-folder-open"></i>
+      Open in Files
+    </button>
+    <button class="context-menu-item" @click="handleDownloadSelection">
+      <i class="fa-solid fa-download"></i>
+      {{ selectionCount > 1 ? `Download selection (${selectionCount})` : 'Download' }}
+    </button>
   </div>
 
   <div v-if="modalOpen && modalItem" class="modal-overlay photo-modal" @click.self="closeModal">
@@ -669,7 +937,11 @@ watch(sentinel, (value) => {
       <button class="icon-btn" @click="zoomIn" aria-label="Zoom in">
         <i class="fa-solid fa-magnifying-glass-plus"></i>
       </button>
-      <a class="icon-btn" :href="fileUrl(rootId, modalItem.path)" aria-label="Download">
+      <a
+        class="icon-btn"
+        :href="downloadUrl(itemRootId(modalItem), modalItem.path)"
+        aria-label="Download"
+      >
         <i class="fa-solid fa-download"></i>
       </a>
       <button class="icon-btn" @click="closeModal" aria-label="Close">
@@ -677,16 +949,24 @@ watch(sentinel, (value) => {
       </button>
     </div>
 
-    <div class="photo-modal-stage">
+    <div class="photo-modal-stage" @click.self="closeModal">
       <img
-        v-if="isImage(modalItem)"
-        :src="fileUrl(rootId, modalItem.path)"
+        v-if="isImage(modalItem) && !hasImageError(modalItem, 'modal')"
+        :src="fileUrl(itemRootId(modalItem), modalItem.path)"
         :alt="modalItem.name"
         :style="{ transform: `scale(${zoomLevel})` }"
+        @error="markImageError(modalItem, 'modal')"
       />
+      <div v-else-if="isImage(modalItem)" class="media-fallback">
+        <i class="fa-solid fa-file-circle-xmark"></i>
+        <div>Preview unavailable</div>
+        <div class="media-fallback-meta">
+          {{ modalItem.ext?.replace('.', '').toUpperCase() || 'FILE' }}
+        </div>
+      </div>
       <video
         v-else-if="isVideo(modalItem)"
-        :src="fileUrl(rootId, modalItem.path)"
+        :src="fileUrl(itemRootId(modalItem), modalItem.path)"
         controls
       ></video>
       <div v-else class="tile-fallback"><i class="fa-solid fa-file"></i></div>

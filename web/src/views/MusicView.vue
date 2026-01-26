@@ -1,7 +1,15 @@
 <script setup>
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
+import { ref, computed, watch, onMounted } from 'vue';
 import { useApi } from '../composables/useApi';
+import { useDownloads } from '../composables/useDownloads';
+import { useInfiniteScroll } from '../composables/useInfiniteScroll';
+import { useMenu, useGlobalMenuClose } from '../composables/useMenu';
+import { useSort } from '../composables/useSort';
+import { useMultiSelect } from '../composables/useMultiSelect';
+import { useSidebar } from '../composables/useSidebar';
 import MiniPlayer from '../components/MiniPlayer.vue';
+import { formatDuration } from '../utils/formatting';
+import { itemKey as buildItemKey } from '../utils/itemKey';
 
 const props = defineProps({
   roots: {
@@ -9,6 +17,10 @@ const props = defineProps({
     required: true,
   },
   currentRoot: {
+    type: Object,
+    default: null,
+  },
+  jumpTo: {
     type: Object,
     default: null,
   },
@@ -24,13 +36,19 @@ const props = defineProps({
     type: Function,
     required: true,
   },
+  onOpenInFiles: {
+    type: Function,
+    default: null,
+  },
   onNavigate: {
     type: Function,
     required: true,
   },
 });
 
-const { apiFetch, fileUrl, albumArtUrl } = useApi();
+const { apiFetch, albumArtUrl } = useApi();
+const { downloadGrouped } = useDownloads();
+const { setSort, sortList, compareText } = useSort();
 
 const mode = ref('songs');
 const items = ref([]);
@@ -54,28 +72,37 @@ const selectedArtist = ref(null);
 const playlists = ref([]);
 const selectedPlaylistId = ref(null);
 const draftCounter = ref(1);
-const contextMenu = ref({ open: false, x: 0, y: 0, track: null });
+const {
+  menu: contextMenu,
+  openMenu: openContextMenuBase,
+  closeMenu: closeContextMenu,
+} = useMenu({ track: null });
+const {
+  menu: albumMenu,
+  openMenu: openAlbumMenuBase,
+  closeMenu: closeAlbumMenu,
+} = useMenu({ album: null });
 const musicPins = ref([]);
 const activePin = ref(null);
 const albumTracks = ref([]);
 const artistTracks = ref([]);
-const sentinel = ref(null);
-let observer = null;
+const { sidebarOpen, toggleSidebar, closeSidebar } = useSidebar();
+useGlobalMenuClose([closeContextMenu, closeAlbumMenu]);
 
 const rootId = computed(() => props.currentRoot?.id || '');
 const isSearchMode = computed(() => Boolean(searchQuery.value.trim()));
 const displaySongs = computed(() => (isSearchMode.value ? searchResults.value : items.value));
 const queue = computed(() => {
   if (mode.value === 'songs') {
-    return displaySongs.value;
+    return sortedSongs.value;
   }
   if (mode.value === 'albums') {
-    return albumTracks.value;
+    return sortedAlbumTracks.value;
   }
   if (mode.value === 'playlists') {
-    return playlistTracks.value;
+    return sortedPlaylistTracks.value;
   }
-  return artistTracks.value;
+  return sortedArtistTracks.value;
 });
 const filteredAlbums = computed(() => {
   if (!isSearchMode.value) {
@@ -96,6 +123,18 @@ const filteredArtists = computed(() => {
   const query = searchQuery.value.trim().toLowerCase();
   return artists.value.filter((artist) => artist.artist?.toLowerCase().includes(query));
 });
+const {
+  selectedKeys: selectedTrackKeys,
+  clearSelection: clearTrackSelectionKeys,
+  setSingleSelection: setSingleTrackSelectionKey,
+  toggleSelection: toggleTrackSelectionKey,
+  selectRange: selectTrackRangeKey,
+  isSelected: isTrackSelected,
+} = useMultiSelect({
+  getItems: () => currentTrackList(),
+  getKey: (item) => itemKey(item),
+});
+const selectionCount = computed(() => selectedTrackKeys.value.length);
 const isAlbumDetail = computed(() => mode.value === 'albums' && selectedAlbum.value);
 const selectedPlaylist = computed(
   () => playlists.value.find((playlist) => playlist.id === selectedPlaylistId.value) || null
@@ -130,16 +169,6 @@ const hasMore = computed(() => {
   return artists.value.length < artistsTotal.value;
 });
 
-function formatDuration(value) {
-  if (!value && value !== 0) {
-    return '';
-  }
-  const totalSeconds = Math.round(value);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
-}
-
 function trackTitle(item) {
   return item.title || item.name || 'Unknown Track';
 }
@@ -152,6 +181,125 @@ function trackAlbum(item) {
   return item.album || 'Unknown Album';
 }
 
+function itemKey(item) {
+  return buildItemKey(item);
+}
+
+function isSelectedTrack(track) {
+  return isTrackSelected(track);
+}
+
+function trackSortValue(item, key) {
+  if (key === 'duration') {
+    return Number(item?.duration) || 0;
+  }
+  if (key === 'album') {
+    return trackAlbum(item);
+  }
+  if (key === 'artist') {
+    return trackArtist(item);
+  }
+  return trackTitle(item);
+}
+
+const sortNumericKeys = ['duration'];
+const sortTieBreak = (a, b) => compareText(trackTitle(a), trackTitle(b));
+
+const sortedSongs = computed(() =>
+  sortList(displaySongs.value, {
+    getValue: trackSortValue,
+    numericKeys: sortNumericKeys,
+    tieBreak: sortTieBreak,
+  })
+);
+const sortedAlbumTracks = computed(() =>
+  sortList(albumTracks.value, {
+    getValue: trackSortValue,
+    numericKeys: sortNumericKeys,
+    tieBreak: sortTieBreak,
+  })
+);
+const sortedPlaylistTracks = computed(() =>
+  sortList(playlistTracks.value, {
+    getValue: trackSortValue,
+    numericKeys: sortNumericKeys,
+    tieBreak: sortTieBreak,
+  })
+);
+const sortedArtistTracks = computed(() =>
+  sortList(artistTracks.value, {
+    getValue: trackSortValue,
+    numericKeys: sortNumericKeys,
+    tieBreak: sortTieBreak,
+  })
+);
+
+function currentTrackList() {
+  if (mode.value === 'songs') {
+    return sortedSongs.value;
+  }
+  if (mode.value === 'albums' && selectedAlbum.value) {
+    return sortedAlbumTracks.value;
+  }
+  if (mode.value === 'playlists' && selectedPlaylist.value) {
+    return sortedPlaylistTracks.value;
+  }
+  if (mode.value === 'artists' && selectedArtist.value) {
+    return sortedArtistTracks.value;
+  }
+  return [];
+}
+
+function findTrackByKey(key) {
+  return currentTrackList().find((track) => itemKey(track) === key) || null;
+}
+
+function clearTrackSelection() {
+  clearTrackSelectionKeys();
+}
+
+function setSingleTrackSelection(track) {
+  if (!track) {
+    return;
+  }
+  setSingleTrackSelectionKey(track);
+  selectedTrack.value = track;
+}
+
+function toggleTrackSelection(track) {
+  if (!track) {
+    return;
+  }
+  const key = itemKey(track);
+  const wasSelected = selectedTrackKeys.value.includes(key);
+  toggleTrackSelectionKey(track);
+  if (wasSelected && itemKey(selectedTrack.value) === key) {
+    const fallbackKey = selectedTrackKeys.value[selectedTrackKeys.value.length - 1];
+    selectedTrack.value = fallbackKey ? findTrackByKey(fallbackKey) : null;
+    return;
+  }
+  if (!wasSelected) {
+    selectedTrack.value = track;
+  }
+}
+
+function selectTrackRange(track, additive) {
+  if (!track) {
+    return;
+  }
+  selectTrackRangeKey(track, { additive });
+  selectedTrack.value = track;
+}
+
+function getSelectedTracks() {
+  const list = currentTrackList();
+  if (!list.length || !selectedTrackKeys.value.length) {
+    return [];
+  }
+  const byKey = new Map(list.map((track) => [itemKey(track), track]));
+  return selectedTrackKeys.value.map((key) => byKey.get(key)).filter(Boolean);
+}
+
 async function loadTracks({ reset = true } = {}) {
   if (!props.currentRoot) {
     return;
@@ -160,6 +308,7 @@ async function loadTracks({ reset = true } = {}) {
     offset.value = 0;
     total.value = 0;
     items.value = [];
+    clearTrackSelection();
   }
   loading.value = true;
   error.value = '';
@@ -204,6 +353,7 @@ async function runSearch({ reset = true } = {}) {
     searchResults.value = [];
     searchOffset.value = 0;
     searchTotal.value = 0;
+    clearTrackSelection();
   }
   loading.value = true;
   try {
@@ -353,11 +503,31 @@ async function loadMore() {
   await loadArtists({ reset: false });
 }
 
-async function selectTrack(item) {
-  selectedTrack.value = item;
+const { sentinel } = useInfiniteScroll(loadMore);
+
+function selectTrack(item) {
+  if (!item) {
+    return;
+  }
+  setSingleTrackSelection(item);
+}
+
+function handleTrackClick(item, event) {
+  const hasMeta = event?.metaKey || event?.ctrlKey;
+  const hasShift = event?.shiftKey;
+  if (hasShift) {
+    selectTrackRange(item, hasMeta);
+    return;
+  }
+  if (hasMeta) {
+    toggleTrackSelection(item);
+    return;
+  }
+  setSingleTrackSelection(item);
 }
 
 async function selectAlbum(album) {
+  clearTrackSelection();
   selectedAlbum.value = album;
   selectedArtist.value = null;
   await loadAlbumTracks(album.albumKey);
@@ -365,12 +535,14 @@ async function selectAlbum(album) {
 }
 
 function clearAlbumSelection() {
+  clearTrackSelection();
   selectedAlbum.value = null;
   albumTracks.value = [];
   props.onNavigate({ mode: 'albums', albumKey: null, artist: null, playlistId: null });
 }
 
 async function selectArtist(artist) {
+  clearTrackSelection();
   selectedArtist.value = artist;
   selectedAlbum.value = null;
   await loadArtistTracks(artist.artist);
@@ -378,6 +550,7 @@ async function selectArtist(artist) {
 }
 
 function selectPlaylist(playlist) {
+  clearTrackSelection();
   selectedPlaylistId.value = playlist?.id || null;
   mode.value = 'playlists';
   searchQuery.value = '';
@@ -390,6 +563,7 @@ function selectPlaylist(playlist) {
 }
 
 function selectMode(value) {
+  clearTrackSelection();
   mode.value = value;
   searchQuery.value = '';
   selectedAlbum.value = null;
@@ -412,6 +586,7 @@ function selectMode(value) {
 }
 
 async function applyNavState() {
+  clearTrackSelection();
   const nextMode = props.navState?.mode || 'songs';
   if (mode.value !== nextMode) {
     mode.value = nextMode;
@@ -462,17 +637,52 @@ async function applyNavState() {
   }
 }
 
-function closeContextMenu() {
-  contextMenu.value = { open: false, x: 0, y: 0, track: null };
+function handleSelectMode(nextMode) {
+  selectMode(nextMode);
+  closeSidebar();
+}
+
+function handleSelectPlaylist(playlist) {
+  selectPlaylist(playlist);
+  closeSidebar();
+}
+
+function handlePinClear() {
+  clearPin();
+  closeSidebar();
+}
+
+function handlePinSelect(pin) {
+  selectPin(pin);
+  closeSidebar();
 }
 
 function openContextMenu(event, track) {
-  contextMenu.value = {
-    open: true,
-    x: event.clientX,
-    y: event.clientY,
-    track,
-  };
+  closeAlbumMenu();
+  if (!isSelectedTrack(track)) {
+    setSingleTrackSelectionKey(track);
+  }
+  openContextMenuBase(event, { track });
+}
+
+function handleOpenInFiles(track) {
+  if (!track?.path || !props.onOpenInFiles) {
+    return;
+  }
+  const trackRoot = resolveTrackRootId(track);
+  if (!trackRoot) {
+    return;
+  }
+  const parts = track.path.split('/');
+  parts.pop();
+  const pathValue = parts.join('/');
+  props.onOpenInFiles({ rootId: trackRoot, path: pathValue });
+  closeContextMenu();
+}
+
+function openAlbumMenu(event, album) {
+  closeContextMenu();
+  openAlbumMenuBase(event, { album });
 }
 
 function persistPlaylists() {
@@ -532,7 +742,102 @@ function addTrackToPlaylist(track) {
   closeContextMenu();
 }
 
-function addAlbumToPlaylist() {
+function addSelectionToPlaylist() {
+  const tracks = getSelectedTracks();
+  if (!tracks.length) {
+    return;
+  }
+  addTracksToPlaylist(tracks);
+  closeContextMenu();
+}
+
+function resolveTrackRootId(track) {
+  if (track?.rootId) {
+    return track.rootId;
+  }
+  if (rootId.value && rootId.value !== '__all__') {
+    return rootId.value;
+  }
+  return '';
+}
+
+async function downloadTracks(tracks, options = {}) {
+  await downloadGrouped({
+    items: tracks,
+    getRootId: resolveTrackRootId,
+    getPath: (track) => track.path,
+    getName: (track) => track.name || track.title || 'download',
+    zipLabel: options.zipLabel || 'music',
+    flatten: Boolean(options.flatten),
+    includeRoot: options.includeRoot ?? true,
+  });
+}
+
+async function handleDownloadSelection() {
+  const tracks = selectionCount.value > 1 ? getSelectedTracks() : [contextMenu.value.track];
+  const filtered = tracks.filter(Boolean);
+  if (!filtered.length) {
+    return;
+  }
+  await downloadTracks(filtered);
+  closeContextMenu();
+}
+
+async function fetchAlbumTracksByKey(key) {
+  if (!props.currentRoot || !key) {
+    return [];
+  }
+  const pathPrefix = activePinPath.value ? `&pathPrefix=${encodeURIComponent(activePinPath.value)}` : '';
+  const res = await apiFetch(
+    `/api/music/album?root=${encodeURIComponent(props.currentRoot.id)}&key=${encodeURIComponent(key)}${pathPrefix}`
+  );
+  if (!res.ok) {
+    return [];
+  }
+  const data = await res.json();
+  return data.items || [];
+}
+
+async function handleDownloadAlbumTracks(album) {
+  if (!album?.albumKey) {
+    return;
+  }
+  const tracks = await fetchAlbumTracksByKey(album.albumKey);
+  if (!tracks.length) {
+    return;
+  }
+  await downloadTracks(tracks);
+  closeAlbumMenu();
+}
+
+async function handleDownloadSelectedAlbum() {
+  if (!albumTracks.value.length) {
+    return;
+  }
+  await downloadTracks(albumTracks.value);
+}
+
+async function handleDownloadPlaylistTracks() {
+  if (!playlistTracks.value.length) {
+    return;
+  }
+  await downloadTracks(playlistTracks.value, {
+    flatten: true,
+    zipLabel: selectedPlaylist.value?.name || 'playlist',
+    includeRoot: false,
+  });
+}
+
+async function addAlbumToPlaylist(album) {
+  if (album?.albumKey) {
+    const tracks = await fetchAlbumTracksByKey(album.albumKey);
+    if (!tracks.length) {
+      return;
+    }
+    addTracksToPlaylist(tracks);
+    closeAlbumMenu();
+    return;
+  }
   if (!albumTracks.value.length) {
     return;
   }
@@ -625,6 +930,7 @@ watch(searchQuery, () => {
 });
 
 watch(activePin, () => {
+  clearTrackSelection();
   searchQuery.value = '';
   if (mode.value === 'songs') {
     loadTracks({ reset: true });
@@ -651,7 +957,7 @@ watch(
   () => props.currentRoot,
   () => {
     searchQuery.value = '';
-    selectedTrack.value = null;
+    clearTrackSelection();
     selectedAlbum.value = null;
     selectedArtist.value = null;
     selectedPlaylistId.value = null;
@@ -671,9 +977,36 @@ watch(
 );
 
 watch(
+  () => props.jumpTo,
+  (value) => {
+    if (!value || typeof value.path !== 'string') {
+      return;
+    }
+    const parts = value.path.split('/');
+    parts.pop();
+    const pathValue = parts.join('/');
+    if (pathValue) {
+      activePin.value = { id: `jump-${value.token || Date.now()}`, path: pathValue, label: pinLabel(pathValue) };
+    } else {
+      activePin.value = null;
+    }
+  },
+  { deep: true }
+);
+
+watch(
   () => props.pageSize,
   () => {
     applyNavState();
+  }
+);
+
+watch(
+  () => props.roots,
+  () => {
+    if (props.currentRoot?.id === '__all__') {
+      applyNavState();
+    }
   }
 );
 
@@ -681,46 +1014,24 @@ onMounted(() => {
   loadPlaylists();
   loadPins();
   applyNavState();
-  observer = new IntersectionObserver((entries) => {
-    if (entries[0].isIntersecting) {
-      loadMore();
-    }
-  });
-  if (sentinel.value) {
-    observer.observe(sentinel.value);
-  }
-  window.addEventListener('click', closeContextMenu);
-  window.addEventListener('scroll', closeContextMenu, true);
-});
-
-onUnmounted(() => {
-  window.removeEventListener('click', closeContextMenu);
-  window.removeEventListener('scroll', closeContextMenu, true);
-});
-
-watch(sentinel, (value) => {
-  if (!observer || !value) {
-    return;
-  }
-  observer.observe(value);
 });
 </script>
 
 <template>
-  <section class="layout layout-wide music-layout">
+  <section class="layout layout-wide music-layout" :class="{ 'sidebar-open': sidebarOpen }">
     <aside class="sidebar">
       <h3>Music</h3>
       <div class="sidebar-section">
         <div class="sidebar-title">Library</div>
-        <button class="sidebar-item" :class="{ active: mode === 'songs' }" @click="selectMode('songs')">
+        <button class="sidebar-item" :class="{ active: mode === 'songs' }" @click="handleSelectMode('songs')">
           <span class="icon"><i class="fa-solid fa-music"></i></span>
           Songs
         </button>
-        <button class="sidebar-item" :class="{ active: mode === 'albums' }" @click="selectMode('albums')">
+        <button class="sidebar-item" :class="{ active: mode === 'albums' }" @click="handleSelectMode('albums')">
           <span class="icon"><i class="fa-solid fa-compact-disc"></i></span>
           Albums
         </button>
-        <button class="sidebar-item" :class="{ active: mode === 'artists' }" @click="selectMode('artists')">
+        <button class="sidebar-item" :class="{ active: mode === 'artists' }" @click="handleSelectMode('artists')">
           <span class="icon"><i class="fa-solid fa-user"></i></span>
           Artists
         </button>
@@ -730,7 +1041,7 @@ watch(sentinel, (value) => {
         <button
           class="sidebar-item"
           :class="{ active: mode === 'playlists' && !selectedPlaylistId }"
-          @click="selectMode('playlists')"
+          @click="handleSelectMode('playlists')"
         >
           <span class="icon"><i class="fa-solid fa-list"></i></span>
           Playlists
@@ -740,7 +1051,7 @@ watch(sentinel, (value) => {
           :key="playlist.id"
           class="sidebar-item"
           :class="{ active: selectedPlaylistId === playlist.id }"
-          @click="selectPlaylist(playlist)"
+          @click="handleSelectPlaylist(playlist)"
         >
           <span class="icon"><i class="fa-solid fa-list-music"></i></span>
           <span class="sidebar-label">{{ playlist.name }}</span>
@@ -753,7 +1064,7 @@ watch(sentinel, (value) => {
         <button
           class="sidebar-item"
           :class="{ active: !activePin }"
-          @click="clearPin"
+          @click="handlePinClear"
         >
           <span class="icon"><i class="fa-regular fa-bookmark"></i></span>
           All locations
@@ -763,7 +1074,7 @@ watch(sentinel, (value) => {
           :key="pin.id"
           class="sidebar-item"
           :class="{ active: activePin?.id === pin.id }"
-          @click="selectPin(pin)"
+          @click="handlePinSelect(pin)"
         >
           <span class="icon"><i class="fa-solid fa-location-dot"></i></span>
           <span class="sidebar-label">{{ pin.label }}</span>
@@ -771,11 +1082,15 @@ watch(sentinel, (value) => {
         <div v-if="!musicPins.length" class="sidebar-hint">Right-click a track to pin.</div>
       </div>
     </aside>
+    <div class="sidebar-scrim" @click="closeSidebar"></div>
 
     <main class="browser music-browser">
       <div class="toolbar">
         <div class="toolbar-title">
           <div class="toolbar-line">
+            <button class="icon-btn sidebar-toggle" @click="toggleSidebar" aria-label="Toggle sidebar">
+              <i class="fa-solid fa-bars"></i>
+            </button>
             <button v-if="isAlbumDetail" class="action-btn secondary" @click="clearAlbumSelection">
               <i class="fa-solid fa-arrow-left"></i>
               Back
@@ -841,17 +1156,17 @@ watch(sentinel, (value) => {
 
       <div v-if="mode === 'songs' && displaySongs.length" class="music-list">
         <div class="music-header">
-          <div>Song</div>
-          <div>Album</div>
-          <div>Artist</div>
-          <div>Duration</div>
+          <button class="music-sort" @click="setSort('title')">Song</button>
+          <button class="music-sort" @click="setSort('album')">Album</button>
+          <button class="music-sort" @click="setSort('artist')">Artist</button>
+          <button class="music-sort" @click="setSort('duration')">Duration</button>
         </div>
         <button
-          v-for="item in displaySongs"
-          :key="item.path"
+          v-for="item in sortedSongs"
+          :key="itemKey(item)"
           class="music-row"
-          :class="{ selected: selectedTrack?.path === item.path }"
-          @click="selectTrack(item)"
+          :class="{ selected: isSelectedTrack(item) }"
+          @click="handleTrackClick(item, $event)"
           @contextmenu.prevent="openContextMenu($event, item)"
         >
           <div class="music-title">{{ trackTitle(item) }}</div>
@@ -868,6 +1183,7 @@ watch(sentinel, (value) => {
           class="album-card"
           :class="{ selected: selectedAlbum?.albumKey === album.albumKey }"
           @click="selectAlbum(album)"
+          @contextmenu.prevent="openAlbumMenu($event, album)"
         >
           <div class="album-art">
             <img
@@ -906,23 +1222,31 @@ watch(sentinel, (value) => {
               <i class="fa-solid fa-plus"></i>
               Add to playlist
             </button>
+            <button
+              class="action-btn secondary"
+              @click="handleDownloadSelectedAlbum"
+              :disabled="!albumTracks.length"
+            >
+              <i class="fa-solid fa-download"></i>
+              Download album
+            </button>
           </div>
         </div>
         <div class="album-tracks">
           <div class="music-header">
-            <div>Song</div>
-            <div>Album</div>
-            <div>Artist</div>
-            <div>Duration</div>
+            <button class="music-sort" @click="setSort('title')">Song</button>
+            <button class="music-sort" @click="setSort('album')">Album</button>
+            <button class="music-sort" @click="setSort('artist')">Artist</button>
+            <button class="music-sort" @click="setSort('duration')">Duration</button>
           </div>
           <button
-            v-for="track in albumTracks"
-            :key="track.path"
-            class="music-row"
-            :class="{ selected: selectedTrack?.path === track.path }"
-            @click="selectTrack(track)"
-            @contextmenu.prevent="openContextMenu($event, track)"
-          >
+          v-for="track in sortedAlbumTracks"
+          :key="itemKey(track)"
+          class="music-row"
+          :class="{ selected: isSelectedTrack(track) }"
+          @click="handleTrackClick(track, $event)"
+          @contextmenu.prevent="openContextMenu($event, track)"
+        >
             <div class="music-title">{{ trackTitle(track) }}</div>
             <div>{{ trackAlbum(track) }}</div>
             <div>{{ trackArtist(track) }}</div>
@@ -960,6 +1284,14 @@ watch(sentinel, (value) => {
               <i class="fa-solid fa-floppy-disk"></i>
               Save
             </button>
+            <button
+              class="action-btn secondary"
+              @click="handleDownloadPlaylistTracks"
+              :disabled="!playlistTracks.length"
+            >
+              <i class="fa-solid fa-download"></i>
+              Download playlist
+            </button>
             <button class="action-btn secondary" @click="clearPlaylist">
               <i class="fa-solid fa-trash"></i>
               Clear
@@ -968,19 +1300,19 @@ watch(sentinel, (value) => {
         </div>
         <div class="album-tracks">
           <div class="music-header">
-            <div>Song</div>
-            <div>Album</div>
-            <div>Artist</div>
-            <div>Duration</div>
+            <button class="music-sort" @click="setSort('title')">Song</button>
+            <button class="music-sort" @click="setSort('album')">Album</button>
+            <button class="music-sort" @click="setSort('artist')">Artist</button>
+            <button class="music-sort" @click="setSort('duration')">Duration</button>
           </div>
           <button
-            v-for="track in playlistTracks"
-            :key="track.path"
-            class="music-row"
-            :class="{ selected: selectedTrack?.path === track.path }"
-            @click="selectTrack(track)"
-            @contextmenu.prevent="openContextMenu($event, track)"
-          >
+          v-for="track in sortedPlaylistTracks"
+          :key="itemKey(track)"
+          class="music-row"
+          :class="{ selected: isSelectedTrack(track) }"
+          @click="handleTrackClick(track, $event)"
+          @contextmenu.prevent="openContextMenu($event, track)"
+        >
             <div class="music-title">{{ trackTitle(track) }}</div>
             <div>{{ trackAlbum(track) }}</div>
             <div>{{ trackArtist(track) }}</div>
@@ -1005,17 +1337,17 @@ watch(sentinel, (value) => {
 
       <div v-if="mode === 'artists' && selectedArtist" class="album-tracks">
         <div class="music-header">
-          <div>Song</div>
-          <div>Album</div>
-          <div>Artist</div>
-          <div>Duration</div>
+          <button class="music-sort" @click="setSort('title')">Song</button>
+          <button class="music-sort" @click="setSort('album')">Album</button>
+          <button class="music-sort" @click="setSort('artist')">Artist</button>
+          <button class="music-sort" @click="setSort('duration')">Duration</button>
         </div>
         <button
-          v-for="track in artistTracks"
-          :key="track.path"
+          v-for="track in sortedArtistTracks"
+          :key="itemKey(track)"
           class="music-row"
-          :class="{ selected: selectedTrack?.path === track.path }"
-          @click="selectTrack(track)"
+          :class="{ selected: isSelectedTrack(track) }"
+          @click="handleTrackClick(track, $event)"
           @contextmenu.prevent="openContextMenu($event, track)"
         >
           <div class="music-title">{{ trackTitle(track) }}</div>
@@ -1036,13 +1368,48 @@ watch(sentinel, (value) => {
       class="context-menu"
       :style="{ top: `${contextMenu.y}px`, left: `${contextMenu.x}px` }"
     >
-      <button class="context-menu-item" @click="addTrackToPlaylist(contextMenu.track)">
+      <button
+        v-if="selectionCount > 1"
+        class="context-menu-item"
+        @click="addSelectionToPlaylist"
+      >
+        <i class="fa-solid fa-plus"></i>
+        Add selection ({{ selectionCount }})
+      </button>
+      <button
+        v-else
+        class="context-menu-item"
+        @click="addTrackToPlaylist(contextMenu.track)"
+      >
         <i class="fa-solid fa-plus"></i>
         Add to playlist
       </button>
       <button class="context-menu-item" @click="addPinForTrack(contextMenu.track)">
         <i class="fa-regular fa-bookmark"></i>
         Pin location
+      </button>
+      <button class="context-menu-item" @click="handleOpenInFiles(contextMenu.track)">
+        <i class="fa-solid fa-folder-open"></i>
+        Open in Files
+      </button>
+      <button class="context-menu-item" @click="handleDownloadSelection">
+        <i class="fa-solid fa-download"></i>
+        {{ selectionCount > 1 ? `Download selection (${selectionCount})` : 'Download' }}
+      </button>
+    </div>
+
+    <div
+      v-if="albumMenu.open"
+      class="context-menu"
+      :style="{ top: `${albumMenu.y}px`, left: `${albumMenu.x}px` }"
+    >
+      <button class="context-menu-item" @click="addAlbumToPlaylist(albumMenu.album)">
+        <i class="fa-solid fa-plus"></i>
+        Add to playlist
+      </button>
+      <button class="context-menu-item" @click="handleDownloadAlbumTracks(albumMenu.album)">
+        <i class="fa-solid fa-download"></i>
+        Download album
       </button>
     </div>
 

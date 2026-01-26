@@ -10,6 +10,25 @@ function resolvePath(rootDir, targetPath) {
     : path.resolve(rootDir, targetPath);
 }
 
+function resolveRootPath(rootDir, hostFsRoot, targetPath) {
+  if (!targetPath) {
+    return null;
+  }
+  if (!path.isAbsolute(targetPath)) {
+    return path.resolve(rootDir, targetPath);
+  }
+  if (!hostFsRoot) {
+    return targetPath;
+  }
+  const hostRoot = path.resolve(hostFsRoot);
+  const normalizedTarget = path.resolve(targetPath);
+  if (normalizedTarget === hostRoot || normalizedTarget.startsWith(`${hostRoot}${path.sep}`)) {
+    return normalizedTarget;
+  }
+  const rel = path.relative(path.parse(normalizedTarget).root, normalizedTarget);
+  return path.join(hostRoot, rel);
+}
+
 function loadConfig(projectRoot) {
   const configPath = path.join(projectRoot, 'config.json');
   if (!fs.existsSync(configPath)) {
@@ -18,9 +37,10 @@ function loadConfig(projectRoot) {
 
   const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
   const roots = Array.isArray(config.roots) ? config.roots : [];
+  const hostFsRoot = config.hostFsRoot ? resolvePath(projectRoot, config.hostFsRoot) : null;
 
   const resolvedRoots = roots.map((root, index) => {
-    const absPath = resolvePath(projectRoot, root.path);
+    const absPath = resolveRootPath(projectRoot, hostFsRoot, root.path);
     const fallbackId = root.id || root.name || path.basename(absPath || '') || `root-${index + 1}`;
     return {
       id: fallbackId,
@@ -36,9 +56,14 @@ function loadConfig(projectRoot) {
     dbPath: resolvePath(projectRoot, config.dbPath || './data/files.db'),
     previewDir: resolvePath(projectRoot, config.previewDir || './data/previews'),
     scanIntervalSeconds: config.scanIntervalSeconds || 60,
+    fastScan: Boolean(config.fastScan),
+    fullScanIntervalHours: Number.isFinite(config.fullScanIntervalHours)
+      ? config.fullScanIntervalHours
+      : 0,
     hashAlgorithm: typeof config.hashAlgorithm === 'string' ? config.hashAlgorithm : 'sha256',
     hashFiles: config.hashFiles !== false,
     devMode: Boolean(config.devMode),
+    hostFsRoot,
     roots: resolvedRoots,
     auth: {
       user: config.auth?.user || 'admin',
@@ -50,4 +75,5 @@ function loadConfig(projectRoot) {
 module.exports = {
   loadConfig,
   resolvePath,
+  resolveRootPath,
 };

@@ -119,3 +119,6 @@
 - Exact root directories and whether they can be modified at runtime.
 - Preferred auth config source (env vs config file).
 - Should we include a lightweight reverse proxy or rely on direct binding.
+
+### Workflow Note
+- After any code change, reboot Docker (`docker compose up -d --build`) before sending the final response.

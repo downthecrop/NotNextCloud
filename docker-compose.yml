@@ -4,6 +4,7 @@ services:
     ports:
       - "4170:4170"
     volumes:
-      - ./config.json:/app/config.json:ro
+      - ./config.json:/app/config.json
       - ./data:/app/data
       - ./test-data:/app/test-data
+      - /:/host:ro

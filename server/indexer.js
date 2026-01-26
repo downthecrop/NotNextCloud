@@ -1,9 +1,10 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { fdir } = require('fdir');
 const mime = require('mime-types');
 
-const { normalizeParent } = require('./utils');
+const { normalizeParent, normalizeRelPath } = require('./utils');
 
 let musicMetadata = null;
 let musicMetadataLoading = null;
@@ -84,215 +85,363 @@ async function writeAlbumArt({ albumKey, album, artist, picture, albumArtDir, db
 const imageExts = new Set(['.jpg', '.jpeg', '.png', '.webp', '.avif']);
 const coverNames = new Set(['cover', 'folder', 'album', 'artwork', 'front']);
 
-function pickFolderArt(dirents, rootPath, relPath) {
-  const candidates = [];
+function scoreCoverCandidate(fileName) {
+  const ext = path.extname(fileName).toLowerCase();
+  if (!imageExts.has(ext)) {
+    return null;
+  }
+  const base = path.parse(fileName).name.toLowerCase();
+  let score = 0;
+  if (coverNames.has(base)) {
+    score = 100;
+  } else if (base.includes('cover') || base.includes('album') || base.includes('art')) {
+    score = 60;
+  }
+  return { score, name: fileName };
+}
+
+function updateFolderArtMap(folderArt, parentRel, fileName, fullPath) {
+  const candidate = scoreCoverCandidate(fileName);
+  if (!candidate) {
+    return;
+  }
+  const normalizedName = candidate.name.toLowerCase();
+  const existing = folderArt.get(parentRel);
+  if (
+    !existing ||
+    candidate.score > existing.score ||
+    (candidate.score === existing.score && normalizedName < existing.name)
+  ) {
+    folderArt.set(parentRel, {
+      score: candidate.score,
+      path: fullPath,
+      name: normalizedName,
+    });
+  }
+}
+
+function buildFolderArtMap(entries) {
+  const folderArt = new Map();
+  for (const entry of entries) {
+    if (entry.isDir) {
+      continue;
+    }
+    const parentRel = normalizeParent(entry.relPath);
+    updateFolderArtMap(folderArt, parentRel, entry.name, entry.fullPath);
+  }
+  return folderArt;
+}
+
+async function buildFolderArtMapForDir(rootPath, relPath, logger) {
+  const folderArt = new Map();
+  const targetPath = relPath ? path.join(rootPath, relPath) : rootPath;
+  let dirents;
+  try {
+    dirents = await fs.promises.readdir(targetPath, { withFileTypes: true });
+  } catch (error) {
+    logger?.warn?.({ err: error, relPath }, 'Failed to read directory');
+    return folderArt;
+  }
   for (const dirent of dirents) {
     if (!dirent.isFile()) {
       continue;
     }
-    const ext = path.extname(dirent.name).toLowerCase();
-    if (!imageExts.has(ext)) {
-      continue;
-    }
-    const base = path.parse(dirent.name).name.toLowerCase();
-    let score = 0;
-    if (coverNames.has(base)) {
-      score = 100;
-    } else if (base.includes('cover') || base.includes('album') || base.includes('art')) {
-      score = 60;
-    }
-    candidates.push({ name: dirent.name, score });
+    updateFolderArtMap(folderArt, relPath, dirent.name, path.join(targetPath, dirent.name));
   }
-
-  if (!candidates.length) {
-    return null;
-  }
-
-  candidates.sort((a, b) => b.score - a.score);
-  const pick = candidates[0];
-  if (!pick) {
-    return null;
-  }
-  return path.join(rootPath, relPath, pick.name);
+  return folderArt;
 }
 
-async function walkDir(rootId, rootPath, relPath, scanId, db, logger, albumArtDir, scanOptions) {
+function isUnderSkipPrefix(relPath, skipPrefixes) {
+  if (!relPath) {
+    return false;
+  }
+  let current = relPath;
+  while (current) {
+    if (skipPrefixes.has(current)) {
+      return true;
+    }
+    current = normalizeParent(current);
+  }
+  return false;
+}
+
+async function collectEntries(rootPath, targetPath, logger) {
+  let fullPaths;
+  try {
+    fullPaths = await new fdir().withFullPaths().withDirs().crawl(targetPath).withPromise();
+  } catch (error) {
+    const relPath = normalizeRelPath(path.relative(rootPath, targetPath));
+    logger?.warn?.({ err: error, relPath }, 'Failed to read directory');
+    return [];
+  }
+
+  const entries = [];
+  for (const fullPath of fullPaths) {
+    let stats;
+    try {
+      stats = await fs.promises.lstat(fullPath);
+    } catch (error) {
+      logger?.warn?.({ err: error, fullPath }, 'Failed to stat entry');
+      continue;
+    }
+    if (stats.isSymbolicLink()) {
+      continue;
+    }
+    const relPath = normalizeRelPath(path.relative(rootPath, fullPath));
+    if (!relPath) {
+      continue;
+    }
+    entries.push({
+      fullPath,
+      relPath,
+      name: path.basename(fullPath),
+      stats,
+      isDir: stats.isDirectory(),
+    });
+  }
+  return entries;
+}
+
+async function processEntry({
+  rootId,
+  relPath,
+  name,
+  fullPath,
+  stats,
+  scanId,
+  db,
+  logger,
+  albumArtDir,
+  folderArtMap,
+  scanOptions,
+  existing,
+  sameStat,
+}) {
   const options = scanOptions || {};
   const hashAlgorithm = options.hashAlgorithm || 'sha256';
   const hashFiles = options.hashFiles !== false;
   const forceHash = Boolean(options.forceHash);
-  let dirents;
-  try {
-    dirents = await fs.promises.readdir(path.join(rootPath, relPath), {
-      withFileTypes: true,
-    });
-  } catch (error) {
-    logger?.warn?.({ err: error, relPath }, 'Failed to read directory');
-    return;
+
+  const isDir = stats.isDirectory();
+  const entrySize = isDir ? 0 : stats.size;
+  const entryMtime = Math.floor(stats.mtimeMs);
+  const entryInode = toStatNumber(stats.ino);
+  const entryDevice = toStatNumber(stats.dev);
+  const ext = isDir ? '' : path.extname(name).toLowerCase();
+  let mimeType = isDir ? null : mime.lookup(ext);
+  if (!mimeType && ext === '.opus') {
+    mimeType = 'audio/opus';
   }
+  const safeMime = isDir ? null : mimeType || 'application/octet-stream';
+  const parent = normalizeParent(relPath);
+  const existingEntry = existing ?? db.getEntry.get(rootId, relPath);
+  const isSameStat =
+    sameStat ??
+    (existingEntry &&
+      existingEntry.size === entrySize &&
+      existingEntry.mtime === entryMtime &&
+      existingEntry.is_dir === (isDir ? 1 : 0) &&
+      (existingEntry.inode ?? null) === entryInode &&
+      (existingEntry.device ?? null) === entryDevice);
+  let title = null;
+  let artist = null;
+  let album = null;
+  let duration = null;
+  let albumKey = null;
+  let contentHash = existingEntry?.content_hash || null;
+  let hashAlg = existingEntry?.hash_alg || null;
 
-  const folderArtPath = pickFolderArt(dirents, rootPath, relPath);
-
-  for (const dirent of dirents) {
-    if (dirent.isSymbolicLink()) {
-      continue;
+  if (!isDir && safeMime && safeMime.startsWith('audio/')) {
+    if (existingEntry && isSameStat) {
+      title = existingEntry.title;
+      artist = existingEntry.artist;
+      album = existingEntry.album;
+      duration = existingEntry.duration;
+      albumKey = existingEntry.album_key;
     }
-
-    const entryRel = relPath ? path.join(relPath, dirent.name) : dirent.name;
-    const entryFull = path.join(rootPath, entryRel);
-    let stats;
-    try {
-      stats = await fs.promises.stat(entryFull);
-    } catch (error) {
-      logger?.warn?.({ err: error, entryRel }, 'Failed to stat entry');
-      continue;
-    }
-
-    const isDir = dirent.isDirectory();
-    const entrySize = isDir ? 0 : stats.size;
-    const entryMtime = Math.floor(stats.mtimeMs);
-    const entryInode = toStatNumber(stats.ino);
-    const entryDevice = toStatNumber(stats.dev);
-    const ext = isDir ? '' : path.extname(dirent.name).toLowerCase();
-    let mimeType = isDir ? null : mime.lookup(ext);
-    if (!mimeType && ext === '.opus') {
-      mimeType = 'audio/opus';
-    }
-    const safeMime = isDir ? null : mimeType || 'application/octet-stream';
-    const parent = normalizeParent(entryRel);
-    const existing = db.getEntry.get(rootId, entryRel);
-    const sameStat =
-      existing &&
-      existing.size === entrySize &&
-      existing.mtime === entryMtime &&
-      existing.is_dir === (isDir ? 1 : 0) &&
-      (existing.inode ?? null) === entryInode &&
-      (existing.device ?? null) === entryDevice;
-    let title = null;
-    let artist = null;
-    let album = null;
-    let duration = null;
-    let albumKey = null;
-    let contentHash = existing?.content_hash || null;
-    let hashAlg = existing?.hash_alg || null;
-
-    if (!isDir && safeMime && safeMime.startsWith('audio/')) {
-      if (existing && sameStat) {
-        title = existing.title;
-        artist = existing.artist;
-        album = existing.album;
-        duration = existing.duration;
-        albumKey = existing.album_key;
-      }
-      if (!existing || !sameStat) {
-        title = null;
-        artist = null;
-        album = null;
-        duration = null;
-        albumKey = null;
-        const metadataLib = await getMusicMetadata();
-        if (metadataLib) {
-          try {
-            const metadata = await metadataLib.parseFile(entryFull, { duration: true });
-            const common = metadata.common || {};
-            const rawTitle = common.title || '';
-            const rawArtist = common.artist || (Array.isArray(common.artists) ? common.artists[0] : '');
-            const rawAlbum = common.album || '';
-            const parentFolder = parent ? path.basename(parent) : '';
-            title = rawTitle || path.parse(dirent.name).name;
-            artist = rawArtist || 'Unknown Artist';
-            album = rawAlbum || parentFolder || 'Unknown Album';
-            duration = metadata.format?.duration || null;
-            albumKey = albumKeyFor(artist, album);
-
-            if (Array.isArray(common.picture) && common.picture.length && albumKey) {
-              await writeAlbumArt({
-                albumKey,
-                album,
-                artist,
-                picture: common.picture[0],
-                albumArtDir,
-                db,
-                logger,
-              });
-            }
-          } catch (error) {
-            logger?.warn?.({ err: error, entryRel }, 'Failed to parse audio metadata');
-            const parentFolder = parent ? path.basename(parent) : '';
-            title = path.parse(dirent.name).name;
-            artist = 'Unknown Artist';
-            album = parentFolder || 'Unknown Album';
-            albumKey = albumKeyFor(artist, album);
-          }
-        } else {
+    if (!existingEntry || !isSameStat) {
+      title = null;
+      artist = null;
+      album = null;
+      duration = null;
+      albumKey = null;
+      const metadataLib = await getMusicMetadata();
+      if (metadataLib) {
+        try {
+          const metadata = await metadataLib.parseFile(fullPath, { duration: true });
+          const common = metadata.common || {};
+          const rawTitle = common.title || '';
+          const rawArtist = common.artist || (Array.isArray(common.artists) ? common.artists[0] : '');
+          const rawAlbum = common.album || '';
           const parentFolder = parent ? path.basename(parent) : '';
-          title = path.parse(dirent.name).name;
+          title = rawTitle || path.parse(name).name;
+          artist = rawArtist || 'Unknown Artist';
+          album = rawAlbum || parentFolder || 'Unknown Album';
+          duration = metadata.format?.duration || null;
+          albumKey = albumKeyFor(artist, album);
+
+          if (Array.isArray(common.picture) && common.picture.length && albumKey) {
+            await writeAlbumArt({
+              albumKey,
+              album,
+              artist,
+              picture: common.picture[0],
+              albumArtDir,
+              db,
+              logger,
+            });
+          }
+        } catch (error) {
+          logger?.warn?.({ err: error, relPath }, 'Failed to parse audio metadata');
+          const parentFolder = parent ? path.basename(parent) : '';
+          title = path.parse(name).name;
           artist = 'Unknown Artist';
           album = parentFolder || 'Unknown Album';
           albumKey = albumKeyFor(artist, album);
         }
-      }
-
-      if (albumKey && folderArtPath) {
-        const existingArt = db.getAlbumArt.get(albumKey);
-        if (!existingArt?.path) {
-          db.upsertAlbumArt.run({
-            album_key: albumKey,
-            album,
-            artist,
-            path: folderArtPath,
-            updated_at: Date.now(),
-          });
-        }
+      } else {
+        const parentFolder = parent ? path.basename(parent) : '';
+        title = path.parse(name).name;
+        artist = 'Unknown Artist';
+        album = parentFolder || 'Unknown Album';
+        albumKey = albumKeyFor(artist, album);
       }
     }
 
-    const needsHash =
-      hashFiles &&
-      !isDir &&
-      (forceHash || !sameStat || !contentHash || hashAlg !== hashAlgorithm);
-    if (!isDir && needsHash) {
-      try {
-        contentHash = await hashFile(entryFull, hashAlgorithm);
-        hashAlg = hashAlgorithm;
-      } catch (error) {
-        logger?.warn?.({ err: error, entryRel }, 'Failed to hash file');
+    const folderArtPath = folderArtMap?.get(parent)?.path || null;
+    if (albumKey && folderArtPath) {
+      const existingArt = db.getAlbumArt.get(albumKey);
+      if (!existingArt?.path) {
+        db.upsertAlbumArt.run({
+          album_key: albumKey,
+          album,
+          artist,
+          path: folderArtPath,
+          updated_at: Date.now(),
+        });
       }
     }
-    if (!hashFiles && !sameStat) {
-      contentHash = null;
-      hashAlg = null;
+  }
+
+  const needsHash =
+    hashFiles &&
+    !isDir &&
+    (forceHash || !isSameStat || !contentHash || hashAlg !== hashAlgorithm);
+  if (!isDir && needsHash) {
+    try {
+      contentHash = await hashFile(fullPath, hashAlgorithm);
+      hashAlg = hashAlgorithm;
+    } catch (error) {
+      logger?.warn?.({ err: error, relPath }, 'Failed to hash file');
+    }
+  }
+  if (!hashFiles && !isSameStat) {
+    contentHash = null;
+    hashAlg = null;
+  }
+
+  if (isSameStat && !needsHash && (!isDir || existingEntry)) {
+    db.touchEntry.run(scanId, rootId, relPath);
+  } else {
+    db.upsertEntry.run({
+      root_id: rootId,
+      rel_path: relPath,
+      parent,
+      name,
+      ext,
+      size: entrySize,
+      mtime: entryMtime,
+      mime: safeMime,
+      is_dir: isDir ? 1 : 0,
+      scan_id: scanId,
+      title,
+      artist,
+      album,
+      duration,
+      album_key: albumKey,
+      content_hash: contentHash,
+      hash_alg: hashAlg,
+      inode: entryInode,
+      device: entryDevice,
+    });
+  }
+}
+
+async function scanDirectory(rootId, rootPath, relPath, scanId, db, logger, albumArtDir, scanOptions) {
+  const options = scanOptions || {};
+  const fastScan = Boolean(options.fastScan);
+  const targetPath = relPath ? path.join(rootPath, relPath) : rootPath;
+  const entries = await collectEntries(rootPath, targetPath, logger);
+  const folderArtMap = buildFolderArtMap(entries);
+  const skipPrefixes = new Set();
+  const dirEntries = entries.filter((entry) => entry.isDir);
+  const fileEntries = entries.filter((entry) => !entry.isDir);
+
+  dirEntries.sort((a, b) => {
+    const depthA = a.relPath.split(/[\\/]/).length;
+    const depthB = b.relPath.split(/[\\/]/).length;
+    if (depthA !== depthB) {
+      return depthA - depthB;
+    }
+    return a.relPath.localeCompare(b.relPath);
+  });
+
+  for (const entry of dirEntries) {
+    if (fastScan && isUnderSkipPrefix(entry.relPath, skipPrefixes)) {
+      continue;
+    }
+    const entryMtime = Math.floor(entry.stats.mtimeMs);
+    const entryInode = toStatNumber(entry.stats.ino);
+    const entryDevice = toStatNumber(entry.stats.dev);
+    const existing = db.getEntry.get(rootId, entry.relPath);
+    const sameStat =
+      existing &&
+      existing.size === 0 &&
+      existing.mtime === entryMtime &&
+      existing.is_dir === 1 &&
+      (existing.inode ?? null) === entryInode &&
+      (existing.device ?? null) === entryDevice;
+
+    if (fastScan && sameStat) {
+      db.touchPrefix.run(scanId, rootId, entry.relPath, `${entry.relPath}/%`);
+      skipPrefixes.add(entry.relPath);
+      continue;
     }
 
-    if (sameStat && !needsHash && (!isDir || existing)) {
-      db.touchEntry.run(scanId, rootId, entryRel);
-    } else {
-      db.upsertEntry.run({
-        root_id: rootId,
-        rel_path: entryRel,
-        parent,
-        name: dirent.name,
-        ext,
-        size: entrySize,
-        mtime: entryMtime,
-        mime: safeMime,
-        is_dir: isDir ? 1 : 0,
-        scan_id: scanId,
-        title,
-        artist,
-        album,
-        duration,
-        album_key: albumKey,
-        content_hash: contentHash,
-        hash_alg: hashAlg,
-        inode: entryInode,
-        device: entryDevice,
-      });
-    }
+    await processEntry({
+      rootId,
+      relPath: entry.relPath,
+      name: entry.name,
+      fullPath: entry.fullPath,
+      stats: entry.stats,
+      scanId,
+      db,
+      logger,
+      albumArtDir,
+      folderArtMap,
+      scanOptions,
+      existing,
+      sameStat,
+    });
+  }
 
-    if (isDir) {
-      await walkDir(rootId, rootPath, entryRel, scanId, db, logger, albumArtDir, scanOptions);
+  for (const entry of fileEntries) {
+    if (fastScan && isUnderSkipPrefix(entry.relPath, skipPrefixes)) {
+      continue;
     }
+    await processEntry({
+      rootId,
+      relPath: entry.relPath,
+      name: entry.name,
+      fullPath: entry.fullPath,
+      stats: entry.stats,
+      scanId,
+      db,
+      logger,
+      albumArtDir,
+      folderArtMap,
+      scanOptions,
+    });
   }
 }
 
@@ -341,7 +490,7 @@ async function scanRoot(root, scanId, db, logger, previewDir, scanOptions) {
 
   if (rootStats.isDirectory()) {
     const albumArtDir = previewDir ? path.join(previewDir, 'album-art') : null;
-    await walkDir(root.id, root.absPath, '', scanId, db, logger, albumArtDir, scanOptions);
+    await scanDirectory(root.id, root.absPath, '', scanId, db, logger, albumArtDir, scanOptions);
   }
 
   db.cleanupOld.run(root.id, scanId);
@@ -351,8 +500,10 @@ function createIndexer(config, db, logger) {
   let scanInProgress = false;
   let scanId = Date.now();
   let lastScanAt = null;
+  let scanTimer = null;
+  let fullScanTimer = null;
 
-  const scanAll = async ({ forceHash = false } = {}) => {
+  const scanAll = async ({ forceHash = false, fastScan = false } = {}) => {
     if (scanInProgress) {
       return;
     }
@@ -362,6 +513,7 @@ function createIndexer(config, db, logger) {
       hashAlgorithm: config.hashAlgorithm || 'sha256',
       hashFiles: config.hashFiles !== false,
       forceHash,
+      fastScan,
     };
 
     for (const root of config.roots) {
@@ -372,21 +524,117 @@ function createIndexer(config, db, logger) {
     scanInProgress = false;
   };
 
-  const start = () => {
-    scanAll().catch((error) => logger?.error?.({ err: error }, 'Initial scan failed'));
+  const scanPath = async ({ root, relPath = '', forceHash = false, fastScan = false } = {}) => {
+    if (scanInProgress) {
+      return;
+    }
+    if (!root?.absPath) {
+      return;
+    }
+    scanInProgress = true;
+    scanId += 1;
+    const scanOptions = {
+      hashAlgorithm: config.hashAlgorithm || 'sha256',
+      hashFiles: config.hashFiles !== false,
+      forceHash,
+      fastScan,
+    };
+    const normalized = relPath || '';
+    const targetPath = path.join(root.absPath, normalized);
+    let stats;
+    try {
+      stats = await fs.promises.stat(targetPath);
+    } catch (error) {
+      logger?.warn?.({ err: error, targetPath }, 'Scan path not accessible');
+      scanInProgress = false;
+      return;
+    }
+    const name = normalized ? path.basename(normalized) : root.name;
+    const albumArtDir = config.previewDir ? path.join(config.previewDir, 'album-art') : null;
+    let folderArtMap = null;
+    if (!stats.isDirectory()) {
+      const parentRel = normalizeParent(normalized);
+      folderArtMap = await buildFolderArtMapForDir(root.absPath, parentRel, logger);
+    }
+    await processEntry({
+      rootId: root.id,
+      relPath: normalized,
+      name,
+      fullPath: targetPath,
+      stats,
+      scanId,
+      db,
+      logger,
+      albumArtDir,
+      folderArtMap,
+      scanOptions,
+    });
+    if (stats.isDirectory()) {
+      await scanDirectory(
+        root.id,
+        root.absPath,
+        normalized,
+        scanId,
+        db,
+        logger,
+        albumArtDir,
+        scanOptions
+      );
+      const prefixLike = normalized ? `${normalized}/%` : '%';
+      if (normalized) {
+        db.cleanupPrefix.run(root.id, normalized, prefixLike, scanId);
+      } else {
+        db.cleanupOld.run(root.id, scanId);
+      }
+    }
+    lastScanAt = Date.now();
+    scanInProgress = false;
+  };
+
+  const scheduleTimers = ({ runImmediate = false } = {}) => {
+    if (scanTimer) {
+      clearInterval(scanTimer);
+    }
+    if (fullScanTimer) {
+      clearInterval(fullScanTimer);
+    }
+    if (runImmediate) {
+      scanAll({ fastScan: config.fastScan }).catch((error) =>
+        logger?.error?.({ err: error }, 'Initial scan failed')
+      );
+    }
     const intervalMs = Math.max(10, config.scanIntervalSeconds || 60) * 1000;
-    return setInterval(() => {
-      scanAll().catch((error) => logger?.error?.({ err: error }, 'Periodic scan failed'));
+    scanTimer = setInterval(() => {
+      scanAll({ fastScan: config.fastScan }).catch((error) =>
+        logger?.error?.({ err: error }, 'Periodic scan failed')
+      );
     }, intervalMs);
+    const fullHours = Number(config.fullScanIntervalHours || 0);
+    if (fullHours > 0) {
+      const fullMs = Math.max(1, fullHours) * 60 * 60 * 1000;
+      fullScanTimer = setInterval(() => {
+        scanAll({ forceHash: true, fastScan: false }).catch((error) =>
+          logger?.error?.({ err: error }, 'Full scan failed')
+        );
+      }, fullMs);
+    }
+  };
+
+  const start = () => {
+    scheduleTimers({ runImmediate: true });
   };
 
   return {
     scanAll,
+    scanPath,
     start,
+    reschedule: () => scheduleTimers({ runImmediate: false }),
     getStatus: () => ({
       lastScanAt,
       scanInProgress,
       scanIntervalSeconds: config.scanIntervalSeconds || 60,
+      fastScan: Boolean(config.fastScan),
+      fullScanIntervalHours: Number(config.fullScanIntervalHours || 0),
     }),
   };
 }

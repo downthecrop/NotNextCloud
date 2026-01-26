@@ -5,6 +5,8 @@ import SettingsModal from './components/SettingsModal.vue';
 import FilesView from './views/FilesView.vue';
 import PhotosView from './views/PhotosView.vue';
 import MusicView from './views/MusicView.vue';
+import { formatDate } from './utils/formatting';
+import { parseHash, buildHash } from './utils/hashNav';
 
 const token = ref(localStorage.getItem('localCloudToken') || '');
 const devMode = ref(false);
@@ -13,9 +15,20 @@ const roots = ref([]);
 const currentRoot = ref(null);
 const currentView = ref('files');
 const musicNav = ref({ mode: 'songs', albumKey: null, artist: null, playlistId: null });
+const filesNav = ref({ rootId: null, path: '', token: 0 });
+const musicJump = ref({ rootId: null, path: '', token: 0 });
+const photosJump = ref({ rootId: null, path: '', token: 0 });
 const settingsOpen = ref(false);
 const pageSize = ref(parseInt(localStorage.getItem('localCloudPageSize') || '50', 10) || 50);
-const status = ref({ lastScanAt: null, scanInProgress: false, scanIntervalSeconds: 0 });
+const status = ref({
+  lastScanAt: null,
+  scanInProgress: false,
+  scanIntervalSeconds: 0,
+  fastScan: true,
+  fullScanIntervalHours: 0,
+});
+const allRoot = computed(() => ({ id: '__all__', name: 'All Roots' }));
+const mediaRoot = computed(() => (currentView.value === 'files' ? currentRoot.value : allRoot.value));
 
 const isAuthenticated = computed(() => Boolean(token.value) || devMode.value);
 
@@ -78,6 +91,26 @@ async function loadStatus() {
   status.value = await res.json();
 }
 
+async function updateScanSettings(nextSettings) {
+  const res = await apiFetch('/api/scan/settings', {
+    method: 'PUT',
+    body: JSON.stringify(nextSettings),
+  });
+  if (!res.ok) {
+    let message = 'Failed to update scan settings.';
+    try {
+      const data = await res.json();
+      if (data?.error) {
+        message = data.error;
+      }
+    } catch {
+      message = 'Failed to update scan settings.';
+    }
+    return { ok: false, error: message };
+  }
+  status.value = await res.json();
+  return { ok: true };
+}
 async function loadRoots() {
   if (!token.value && !devMode.value) {
     return;
@@ -93,16 +126,39 @@ async function loadRoots() {
   await loadStatus();
 }
 
-function selectRoot(root) {
-  currentRoot.value = root;
+async function updateRoots(nextRoots) {
+  const res = await apiFetch('/api/roots', {
+    method: 'PUT',
+    body: JSON.stringify({
+      roots: nextRoots.map((root) => ({
+        id: root.id,
+        name: root.name,
+        path: root.path,
+      })),
+    }),
+  });
+  if (!res.ok) {
+    let message = 'Failed to update roots.';
+    try {
+      const data = await res.json();
+      if (data?.error) {
+        message = data.error;
+      }
+    } catch {
+      message = 'Failed to update roots.';
+    }
+    return { ok: false, error: message };
+  }
+  roots.value = await res.json();
+  if (!roots.value.find((root) => root.id === currentRoot.value?.id)) {
+    currentRoot.value = roots.value[0] || null;
+  }
+  await loadStatus();
+  return { ok: true };
 }
 
-function formatDate(value) {
-  if (!value) {
-    return '';
-  }
-  const date = new Date(value);
-  return date.toLocaleString();
+function selectRoot(root) {
+  currentRoot.value = root;
 }
 
 function onPageSizeChange(value) {
@@ -111,70 +167,21 @@ function onPageSizeChange(value) {
   localStorage.setItem('localCloudPageSize', String(parsed));
 }
 
-function parseHash() {
-  const raw = window.location.hash.replace(/^#/, '');
-  if (!raw) {
-    return { view: 'files', music: { mode: 'songs', albumKey: null, artist: null, playlistId: null } };
-  }
-  const parts = raw.split('/').filter(Boolean);
-  const view = parts[0];
-  if (view === 'music') {
-    let mode = 'songs';
-    let albumKey = null;
-    let artist = null;
-    let playlistId = null;
-    if (parts[1] === 'albums') {
-      mode = 'albums';
-      albumKey = parts[2] ? decodeURIComponent(parts[2]) : null;
-    } else if (parts[1] === 'artists') {
-      mode = 'artists';
-      artist = parts[2] ? decodeURIComponent(parts[2]) : null;
-    } else if (parts[1] === 'playlists') {
-      mode = 'playlists';
-      playlistId = parts[2] ? decodeURIComponent(parts[2]) : null;
-    }
-    return { view, music: { mode, albumKey, artist, playlistId } };
-  }
-  if (view === 'photos') {
-    return { view: 'photos', music: { mode: 'songs', albumKey: null, artist: null, playlistId: null } };
-  }
-  return { view: 'files', music: { mode: 'songs', albumKey: null, artist: null, playlistId: null } };
-}
-
-function buildHash(view, music) {
-  if (view === 'music') {
-    const mode = music?.mode || 'songs';
-    if (mode === 'albums') {
-      return music?.albumKey
-        ? `#music/albums/${encodeURIComponent(music.albumKey)}`
-        : '#music/albums';
-    }
-    if (mode === 'artists') {
-      return music?.artist
-        ? `#music/artists/${encodeURIComponent(music.artist)}`
-        : '#music/artists';
-    }
-    if (mode === 'playlists') {
-      return music?.playlistId
-        ? `#music/playlists/${encodeURIComponent(music.playlistId)}`
-        : '#music/playlists';
-    }
-    return '#music';
-  }
-  if (view === 'photos') {
-    return '#photos';
-  }
-  return '#files';
-}
-
 function applyHash() {
-  const parsed = parseHash();
+  const parsed = parseHash(window.location.hash);
   currentView.value = parsed.view;
   musicNav.value = parsed.music;
+  if (parsed.view === 'files') {
+    filesNav.value = {
+      rootId: parsed.files?.rootId || null,
+      path: parsed.files?.path || '',
+      token: Date.now(),
+    };
+  }
 }
 
 function setHash(view, music) {
-  const next = buildHash(view, music);
+  const next = buildHash({ view, music, files: filesNav.value });
   if (window.location.hash !== next) {
     window.location.hash = next;
   }
@@ -183,6 +190,46 @@ function setHash(view, music) {
 function setView(view) {
   currentView.value = view;
   setHash(view, musicNav.value);
+}
+
+function openInFiles({ rootId, path }) {
+  const root = roots.value.find((item) => item.id === rootId);
+  if (root) {
+    currentRoot.value = root;
+  }
+  filesNav.value = {
+    rootId: rootId || null,
+    path: path || '',
+    token: Date.now(),
+  };
+  setView('files');
+}
+
+function openInMusic({ rootId, path, albumKey }) {
+  const nextMode = albumKey ? 'albums' : 'songs';
+  musicNav.value = {
+    mode: nextMode,
+    albumKey: albumKey || null,
+    artist: null,
+    playlistId: null,
+  };
+  musicJump.value = {
+    rootId: rootId || null,
+    path: path || '',
+    mode: nextMode,
+    albumKey: albumKey || null,
+    token: Date.now(),
+  };
+  setView('music');
+}
+
+function openInPhotos({ rootId, path }) {
+  photosJump.value = {
+    rootId: rootId || null,
+    path: path || '',
+    token: Date.now(),
+  };
+  setView('photos');
 }
 
 function updateMusicNav(next) {
@@ -212,6 +259,12 @@ watch(token, (value) => {
   }
 });
 
+watch(currentView, (view) => {
+  if (view !== 'photos' && photosJump.value.path) {
+    photosJump.value = { rootId: null, path: '', token: 0 };
+  }
+});
+
 onMounted(() => {
   fetch('/api/health')
     .then((res) => res.json())
@@ -230,6 +283,25 @@ onMounted(() => {
   applyHash();
   window.addEventListener('hashchange', applyHash);
 });
+
+watch(
+  [() => roots.value, () => filesNav.value.rootId, () => currentView.value],
+  () => {
+    if (currentView.value !== 'files') {
+      return;
+    }
+    if (!filesNav.value.rootId) {
+      return;
+    }
+    if (currentRoot.value?.id === filesNav.value.rootId) {
+      return;
+    }
+    const root = roots.value.find((item) => item.id === filesNav.value.rootId);
+    if (root) {
+      currentRoot.value = root;
+    }
+  }
+);
 </script>
 
 <template>
@@ -238,7 +310,10 @@ onMounted(() => {
   <div v-else-if="isAuthenticated" class="app-shell">
     <header class="top-bar">
       <div class="brand-group">
-        <div class="brand">Local Cloud</div>
+        <button class="brand" type="button" @click="setView('files')" aria-label="Go to Files">
+          <span class="sr-only">Local Cloud</span>
+          <i class="fa-solid fa-cloud"></i>
+        </button>
         <div class="view-tabs">
           <button :class="{ active: currentView === 'files' }" @click="setView('files')">
             Files
@@ -252,7 +327,9 @@ onMounted(() => {
         </div>
       </div>
       <div class="top-actions">
-        <button class="icon-btn" @click="settingsOpen = true">Settings</button>
+        <button class="icon-btn" @click="settingsOpen = true" aria-label="Settings">
+          <i class="fa-solid fa-gear"></i>
+        </button>
         <button v-if="!devMode" class="action-btn secondary" @click="logout">Sign out</button>
       </div>
     </header>
@@ -261,35 +338,45 @@ onMounted(() => {
       v-if="currentView === 'files'"
       :roots="roots"
       :current-root="currentRoot"
+      :nav-state="filesNav"
       :page-size="pageSize"
       :on-select-root="selectRoot"
+      :on-open-in-music="openInMusic"
+      :on-open-in-photos="openInPhotos"
     />
 
     <PhotosView
       v-else-if="currentView === 'photos'"
       :roots="roots"
-      :current-root="currentRoot"
+      :current-root="mediaRoot"
+      :jump-to="photosJump"
       :page-size="pageSize"
       :on-select-root="selectRoot"
+      :on-open-in-files="openInFiles"
     />
 
     <MusicView
       v-else
       :roots="roots"
-      :current-root="currentRoot"
+      :current-root="mediaRoot"
+      :jump-to="musicJump"
       :page-size="pageSize"
       :on-select-root="selectRoot"
+      :on-open-in-files="openInFiles"
       :nav-state="musicNav"
       :on-navigate="updateMusicNav"
     />
 
     <SettingsModal
       :open="settingsOpen"
+      :roots="roots"
       :page-size="pageSize"
       :status="status"
       :format-date="formatDate"
       :on-close="() => (settingsOpen = false)"
       :on-page-size-change="onPageSizeChange"
+      :on-update-roots="updateRoots"
+      :on-update-scan-settings="updateScanSettings"
       :on-rescan-files="() => rescan('files')"
       :on-rescan-music="() => rescan('music')"
       :on-rebuild-thumbs="rebuildThumbs"
