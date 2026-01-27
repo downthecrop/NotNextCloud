@@ -39,7 +39,7 @@ const props = defineProps({
   },
 });
 
-const { apiFetch, fileUrl, previewUrl, downloadUrl } = useApi();
+const { apiJson, fileUrl, previewUrl, downloadUrl } = useApi();
 const { downloadGrouped } = useDownloads();
 const { sortDir, setSort, sortList, compareText } = useSort({
   initialKey: 'date',
@@ -545,15 +545,15 @@ async function loadPhotos({ reset = true } = {}) {
   try {
     const pageOffset = reset ? 0 : offset.value;
     const pathPrefix = activePinPath.value ? `&pathPrefix=${encodeURIComponent(activePinPath.value)}` : '';
-    const res = await apiFetch(
+    const result = await apiJson(
       `/api/media?root=${encodeURIComponent(props.currentRoot.id)}` +
         `&type=photos&limit=${props.pageSize}&offset=${pageOffset}${pathPrefix}`
     );
-    if (!res.ok) {
+    if (!result.ok) {
       error.value = 'Failed to load photos';
       return;
     }
-    const data = await res.json();
+    const data = result.data || {};
     const newItems = data.items || [];
     items.value = reset ? newItems : [...items.value, ...newItems];
     total.value = data.total || 0;
@@ -585,15 +585,15 @@ async function runSearch({ reset = true } = {}) {
   try {
     const pageOffset = reset ? 0 : searchOffset.value;
     const pathPrefix = activePinPath.value ? `&pathPrefix=${encodeURIComponent(activePinPath.value)}` : '';
-    const res = await apiFetch(
+    const result = await apiJson(
       `/api/search?root=${encodeURIComponent(props.currentRoot.id)}` +
         `&type=photos&q=${encodeURIComponent(query)}` +
         `&limit=${props.pageSize}&offset=${pageOffset}${pathPrefix}`
     );
-    if (!res.ok) {
+    if (!result.ok) {
       return;
     }
-    const data = await res.json();
+    const data = result.data || {};
     const newItems = data.items || [];
     searchResults.value = reset ? newItems : [...searchResults.value, ...newItems];
     searchTotal.value = data.total || 0;

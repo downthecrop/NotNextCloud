@@ -55,7 +55,7 @@ const props = defineProps({
   },
 });
 
-const { apiFetch, fileUrl, previewUrl, downloadUrl, trashFileUrl } = useApi();
+const { apiJson, fileUrl, previewUrl, downloadUrl, trashFileUrl } = useApi();
 const { downloadFile, downloadZipPaths } = useDownloads();
 
 const currentPath = ref('');
@@ -192,7 +192,7 @@ async function scheduleScan(mode, pathValue) {
   if (!props.currentRoot) {
     return;
   }
-  await apiFetch('/api/scan', {
+  await apiJson('/api/scan', {
     method: 'POST',
     body: JSON.stringify({
       root: props.currentRoot.id,
@@ -285,7 +285,7 @@ async function moveItemsToTrash(targetItems) {
     if (!paths.length) {
       continue;
     }
-    await apiFetch('/api/delete', {
+    await apiJson('/api/delete', {
       method: 'POST',
       body: JSON.stringify({ root: targetRootId, paths }),
     });
@@ -313,7 +313,7 @@ async function restoreSelection() {
   if (!ids.length) {
     return;
   }
-  await apiFetch('/api/trash/restore', {
+  await apiJson('/api/trash/restore', {
     method: 'POST',
     body: JSON.stringify({ ids }),
   });
@@ -334,7 +334,7 @@ async function deleteTrashSelection() {
   if (!ids.length) {
     return;
   }
-  await apiFetch('/api/trash/delete', {
+  await apiJson('/api/trash/delete', {
     method: 'POST',
     body: JSON.stringify({ ids }),
   });
@@ -348,7 +348,7 @@ async function clearTrash() {
   if (!confirm('Permanently delete all items in Recycle Bin?')) {
     return;
   }
-  await apiFetch('/api/trash/clear', { method: 'POST', body: JSON.stringify({ root: '__all__' }) });
+  await apiJson('/api/trash/clear', { method: 'POST', body: JSON.stringify({ root: '__all__' }) });
   clearSelection();
   await loadTrash({ reset: true });
   needsFilesRefresh.value = true;
@@ -506,33 +506,20 @@ async function uploadFiles(files) {
         continue;
       }
       const getStatus = async (overwriteFlag) => {
-        const statusRes = await apiFetch(
+        const result = await apiJson(
           `/api/upload/status?root=${encodeURIComponent(props.currentRoot.id)}` +
             `&path=${encodeURIComponent(currentPath.value)}` +
             `&file=${encodeURIComponent(name)}` +
             `&size=${file.size}` +
             `&overwrite=${overwriteFlag ? '1' : '0'}`
         );
-        if (statusRes.status === 409) {
-          const data = await statusRes.json().catch(() => null);
-          if (data?.status === 'exists' || /exists/i.test(data?.error || '')) {
+        if (!result.ok) {
+          if (result.error?.code === 'exists') {
             return { status: 'exists' };
           }
-          throw new Error(data?.error || 'Upload failed');
+          throw new Error(result.error?.message || 'Upload failed');
         }
-        if (!statusRes.ok) {
-          let message = 'Upload failed.';
-          try {
-            const data = await statusRes.json();
-            if (data?.error) {
-              message = data.error;
-            }
-          } catch {
-            message = 'Upload failed.';
-          }
-          throw new Error(message);
-        }
-        return statusRes.json();
+        return result.data;
       };
       try {
         uploadProgress.value = { file: name, percent: 0 };
@@ -568,7 +555,7 @@ async function uploadFiles(files) {
           const percent = Math.min(100, Math.floor((offset / file.size) * 100));
           uploadProgress.value = { file: name, percent };
           uploadMessage.value = `Uploading ${name} (${percent}%)`;
-          const chunkRes = await apiFetch(
+          const chunkResult = await apiJson(
             `/api/upload/chunk?root=${encodeURIComponent(props.currentRoot.id)}` +
               `&path=${encodeURIComponent(currentPath.value)}` +
               `&file=${encodeURIComponent(name)}` +
@@ -581,25 +568,20 @@ async function uploadFiles(files) {
               body: chunk,
             }
           );
-          if (chunkRes.status === 409) {
-            const data = await chunkRes.json().catch(() => null);
-            const expected = Number.isFinite(data?.expectedOffset) ? data.expectedOffset : offset;
-            offset = expected;
-            continue;
-          }
-          if (!chunkRes.ok) {
-            let message = 'Upload failed.';
-            try {
-              const data = await chunkRes.json();
-              if (data?.error) {
-                message = data.error;
-              }
-            } catch {
-              message = 'Upload failed.';
+          if (!chunkResult.ok) {
+            if (chunkResult.error?.code === 'offset_mismatch') {
+              const expected = Number.isFinite(chunkResult.error?.details?.expectedOffset)
+                ? chunkResult.error.details.expectedOffset
+                : offset;
+              offset = expected;
+              continue;
             }
-            throw new Error(message);
+            if (chunkResult.error?.code === 'exists') {
+              throw new Error('File already exists');
+            }
+            throw new Error(chunkResult.error?.message || 'Upload failed');
           }
-          const data = await chunkRes.json();
+          const data = chunkResult.data || {};
           offset = Number.isFinite(data?.offset) ? data.offset : offset + chunk.size;
           if (data?.complete) {
             break;
@@ -663,16 +645,16 @@ async function loadList({ reset = true } = {}) {
   error.value = '';
   try {
     const offset = reset ? 0 : listOffset.value;
-    const res = await apiFetch(
+    const result = await apiJson(
       `/api/list?root=${encodeURIComponent(props.currentRoot.id)}` +
         `&path=${encodeURIComponent(currentPath.value)}` +
         `&limit=${props.pageSize}&offset=${offset}`
     );
-    if (!res.ok) {
+    if (!result.ok) {
       error.value = 'Failed to load directory';
       return;
     }
-    const data = await res.json();
+    const data = result.data || {};
     const newItems = data.items || [];
     items.value = reset ? newItems : [...items.value, ...newItems];
     listTotal.value = data.total || 0;
@@ -698,14 +680,12 @@ async function loadTrash({ reset = true } = {}) {
   error.value = '';
   try {
     const offset = reset ? 0 : trashOffset.value;
-    const res = await apiFetch(
-      `/api/trash?root=__all__&limit=${props.pageSize}&offset=${offset}`
-    );
-    if (!res.ok) {
+    const result = await apiJson(`/api/trash?root=__all__&limit=${props.pageSize}&offset=${offset}`);
+    if (!result.ok) {
       error.value = 'Failed to load trash';
       return;
     }
-    const data = await res.json();
+    const data = result.data || {};
     const newItems = data.items || [];
     trashItems.value = reset ? newItems : [...trashItems.value, ...newItems];
     trashTotal.value = data.total || 0;
@@ -741,15 +721,15 @@ async function runSearch({ reset = true } = {}) {
   loading.value = true;
   try {
     const offset = reset ? 0 : searchOffset.value;
-    const res = await apiFetch(
+    const result = await apiJson(
       `/api/search?root=${encodeURIComponent(targetRootId)}` +
         `&q=${encodeURIComponent(query)}` +
         `&limit=${props.pageSize}&offset=${offset}`
     );
-    if (!res.ok) {
+    if (!result.ok) {
       return;
     }
-    const data = await res.json();
+    const data = result.data || {};
     const newItems = data.items || [];
     searchResults.value = reset ? newItems : [...searchResults.value, ...newItems];
     searchTotal.value = data.total || 0;

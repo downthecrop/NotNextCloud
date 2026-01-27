@@ -3,6 +3,7 @@ import { inject } from 'vue';
 export function useApi() {
   const token = inject('authToken');
   const apiFetch = inject('apiFetch');
+  const apiJson = inject('apiJson');
 
   const withToken = (url) => {
     if (!token?.value) {
@@ -34,6 +35,7 @@ export function useApi() {
   return {
     token,
     apiFetch,
+    apiJson,
     withToken,
     fileUrl,
     previewUrl,

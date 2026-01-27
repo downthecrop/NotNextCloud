@@ -9,7 +9,6 @@
     "start": "node server.js"
   },
   "dependencies": {
-    "@fastify/multipart": "^7.6.0",
     "@fastify/static": "^7.0.0",
     "archiver": "^6.0.2",
     "better-sqlite3": "^9.4.0",

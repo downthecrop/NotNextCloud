@@ -72,7 +72,41 @@ async function apiFetch(url, options = {}) {
   return response;
 }
 
+async function apiJson(url, options = {}) {
+  const res = await apiFetch(url, options);
+  let payload = null;
+  try {
+    payload = await res.json();
+  } catch {
+    payload = null;
+  }
+  if (payload && typeof payload === 'object' && 'ok' in payload) {
+    if (!payload.ok) {
+      return {
+        ok: false,
+        status: res.status,
+        error: payload.error || { message: 'Request failed' },
+      };
+    }
+    return {
+      ok: true,
+      status: res.status,
+      data: payload.data,
+      meta: payload.meta || null,
+    };
+  }
+  if (!res.ok) {
+    return {
+      ok: false,
+      status: res.status,
+      error: payload?.error || { message: 'Request failed' },
+    };
+  }
+  return { ok: true, status: res.status, data: payload, meta: null };
+}
+
 provide('apiFetch', apiFetch);
+provide('apiJson', apiJson);
 provide('authToken', token);
 
 async function login({ user, pass }) {
@@ -85,8 +119,11 @@ async function login({ user, pass }) {
     if (!res.ok) {
       return false;
     }
-    const data = await res.json();
-    setToken(data.token);
+    const payload = await res.json();
+    if (!payload?.ok) {
+      return false;
+    }
+    setToken(payload.data?.token);
     await loadRoots();
     return true;
   } catch {
@@ -100,50 +137,42 @@ async function logout() {
 }
 
 async function loadStatus() {
-  const res = await apiFetch('/api/status');
-  if (!res.ok) {
+  const result = await apiJson('/api/status');
+  if (!result.ok) {
     return;
   }
-  status.value = await res.json();
+  status.value = result.data;
 }
 
 async function loadInfo() {
-  const res = await apiFetch('/api/info');
-  if (!res.ok) {
+  const result = await apiJson('/api/info');
+  if (!result.ok) {
     return;
   }
-  apiInfo.value = await res.json();
+  apiInfo.value = result.data;
 }
 
 async function updateScanSettings(nextSettings) {
-  const res = await apiFetch('/api/scan/settings', {
+  const result = await apiJson('/api/scan/settings', {
     method: 'PUT',
     body: JSON.stringify(nextSettings),
   });
-  if (!res.ok) {
-    let message = 'Failed to update scan settings.';
-    try {
-      const data = await res.json();
-      if (data?.error) {
-        message = data.error;
-      }
-    } catch {
-      message = 'Failed to update scan settings.';
-    }
+  if (!result.ok) {
+    const message = result.error?.message || 'Failed to update scan settings.';
     return { ok: false, error: message };
   }
-  status.value = await res.json();
+  status.value = result.data;
   return { ok: true };
 }
 async function loadRoots() {
   if (!token.value && !devMode.value) {
     return;
   }
-  const res = await apiFetch('/api/roots');
-  if (!res.ok) {
+  const result = await apiJson('/api/roots');
+  if (!result.ok) {
     return;
   }
-  roots.value = await res.json();
+  roots.value = result.data;
   if (!currentRoot.value && roots.value.length) {
     currentRoot.value = roots.value[0];
   }
@@ -152,7 +181,7 @@ async function loadRoots() {
 }
 
 async function updateRoots(nextRoots) {
-  const res = await apiFetch('/api/roots', {
+  const result = await apiJson('/api/roots', {
     method: 'PUT',
     body: JSON.stringify({
       roots: nextRoots.map((root) => ({
@@ -162,19 +191,11 @@ async function updateRoots(nextRoots) {
       })),
     }),
   });
-  if (!res.ok) {
-    let message = 'Failed to update roots.';
-    try {
-      const data = await res.json();
-      if (data?.error) {
-        message = data.error;
-      }
-    } catch {
-      message = 'Failed to update roots.';
-    }
+  if (!result.ok) {
+    const message = result.error?.message || 'Failed to update roots.';
     return { ok: false, error: message };
   }
-  roots.value = await res.json();
+  roots.value = result.data;
   if (!roots.value.find((root) => root.id === currentRoot.value?.id)) {
     currentRoot.value = roots.value[0] || null;
   }
@@ -265,15 +286,14 @@ function updateMusicNav(next) {
 }
 
 async function rescan(scope) {
-  const res = await apiFetch(`/api/scan?scope=${encodeURIComponent(scope)}`, { method: 'POST' });
-  if (res.ok) {
-    const data = await res.json();
-    status.value = data.status || status.value;
+  const result = await apiJson(`/api/scan?scope=${encodeURIComponent(scope)}`, { method: 'POST' });
+  if (result.ok) {
+    status.value = result.data?.status || status.value;
   }
 }
 
 async function rebuildThumbs() {
-  await apiFetch('/api/previews/rebuild', { method: 'POST' });
+  await apiJson('/api/previews/rebuild', { method: 'POST' });
 }
 
 watch(token, (value) => {
@@ -294,8 +314,12 @@ watch(currentView, (view) => {
 onMounted(() => {
   fetch('/api/health')
     .then((res) => res.json())
-    .then((data) => {
-      devMode.value = Boolean(data.devMode);
+    .then((payload) => {
+      if (payload?.ok) {
+        devMode.value = Boolean(payload.data?.devMode);
+      } else {
+        devMode.value = false;
+      }
     })
     .catch(() => {
       devMode.value = false;

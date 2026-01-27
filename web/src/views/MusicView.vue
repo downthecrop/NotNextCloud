@@ -46,7 +46,7 @@ const props = defineProps({
   },
 });
 
-const { apiFetch, albumArtUrl } = useApi();
+const { apiJson, albumArtUrl } = useApi();
 const { downloadGrouped } = useDownloads();
 const { setSort, sortList, compareText } = useSort();
 
@@ -315,15 +315,15 @@ async function loadTracks({ reset = true } = {}) {
   try {
     const pageOffset = reset ? 0 : offset.value;
     const pathPrefix = activePinPath.value ? `&pathPrefix=${encodeURIComponent(activePinPath.value)}` : '';
-    const res = await apiFetch(
+    const result = await apiJson(
       `/api/media?root=${encodeURIComponent(props.currentRoot.id)}` +
         `&type=music&limit=${props.pageSize}&offset=${pageOffset}${pathPrefix}`
     );
-    if (!res.ok) {
+    if (!result.ok) {
       error.value = 'Failed to load tracks';
       return;
     }
-    const data = await res.json();
+    const data = result.data || {};
     const newItems = data.items || [];
     items.value = reset ? newItems : [...items.value, ...newItems];
     total.value = data.total || 0;
@@ -359,15 +359,15 @@ async function runSearch({ reset = true } = {}) {
   try {
     const pageOffset = reset ? 0 : searchOffset.value;
     const pathPrefix = activePinPath.value ? `&pathPrefix=${encodeURIComponent(activePinPath.value)}` : '';
-    const res = await apiFetch(
+    const result = await apiJson(
       `/api/search?root=${encodeURIComponent(props.currentRoot.id)}` +
         `&type=music&q=${encodeURIComponent(query)}` +
         `&limit=${props.pageSize}&offset=${pageOffset}${pathPrefix}`
     );
-    if (!res.ok) {
+    if (!result.ok) {
       return;
     }
-    const data = await res.json();
+    const data = result.data || {};
     const newItems = data.items || [];
     searchResults.value = reset ? newItems : [...searchResults.value, ...newItems];
     searchTotal.value = data.total || 0;
@@ -393,15 +393,15 @@ async function loadAlbums({ reset = true } = {}) {
   try {
     const pageOffset = reset ? 0 : albumsOffset.value;
     const pathPrefix = activePinPath.value ? `&pathPrefix=${encodeURIComponent(activePinPath.value)}` : '';
-    const res = await apiFetch(
+    const result = await apiJson(
       `/api/music/albums?root=${encodeURIComponent(props.currentRoot.id)}` +
         `&limit=${props.pageSize}&offset=${pageOffset}${pathPrefix}`
     );
-    if (!res.ok) {
+    if (!result.ok) {
       error.value = 'Failed to load albums';
       return;
     }
-    const data = await res.json();
+    const data = result.data || {};
     const newItems = data.items || [];
     albums.value = reset ? newItems : [...albums.value, ...newItems];
     albumsTotal.value = data.total || 0;
@@ -427,15 +427,15 @@ async function loadArtists({ reset = true } = {}) {
   try {
     const pageOffset = reset ? 0 : artistsOffset.value;
     const pathPrefix = activePinPath.value ? `&pathPrefix=${encodeURIComponent(activePinPath.value)}` : '';
-    const res = await apiFetch(
+    const result = await apiJson(
       `/api/music/artists?root=${encodeURIComponent(props.currentRoot.id)}` +
         `&limit=${props.pageSize}&offset=${pageOffset}${pathPrefix}`
     );
-    if (!res.ok) {
+    if (!result.ok) {
       error.value = 'Failed to load artists';
       return;
     }
-    const data = await res.json();
+    const data = result.data || {};
     const newItems = data.items || [];
     artists.value = reset ? newItems : [...artists.value, ...newItems];
     artistsTotal.value = data.total || 0;
@@ -452,13 +452,13 @@ async function loadAlbumTracks(key) {
     return;
   }
   const pathPrefix = activePinPath.value ? `&pathPrefix=${encodeURIComponent(activePinPath.value)}` : '';
-  const res = await apiFetch(
+  const result = await apiJson(
     `/api/music/album?root=${encodeURIComponent(props.currentRoot.id)}&key=${encodeURIComponent(key)}${pathPrefix}`
   );
-  if (!res.ok) {
+  if (!result.ok) {
     return;
   }
-  const data = await res.json();
+  const data = result.data || {};
   albumTracks.value = data.items || [];
 }
 
@@ -467,14 +467,14 @@ async function loadArtistTracks(artist) {
     return;
   }
   const pathPrefix = activePinPath.value ? `&pathPrefix=${encodeURIComponent(activePinPath.value)}` : '';
-  const res = await apiFetch(
+  const result = await apiJson(
     `/api/music/artist?root=${encodeURIComponent(props.currentRoot.id)}` +
       `&artist=${encodeURIComponent(artist)}${pathPrefix}`
   );
-  if (!res.ok) {
+  if (!result.ok) {
     return;
   }
-  const data = await res.json();
+  const data = result.data || {};
   artistTracks.value = data.items || [];
 }
 
@@ -788,13 +788,13 @@ async function fetchAlbumTracksByKey(key) {
     return [];
   }
   const pathPrefix = activePinPath.value ? `&pathPrefix=${encodeURIComponent(activePinPath.value)}` : '';
-  const res = await apiFetch(
+  const result = await apiJson(
     `/api/music/album?root=${encodeURIComponent(props.currentRoot.id)}&key=${encodeURIComponent(key)}${pathPrefix}`
   );
-  if (!res.ok) {
+  if (!result.ok) {
     return [];
   }
-  const data = await res.json();
+  const data = result.data || {};
   return data.items || [];
 }
 
