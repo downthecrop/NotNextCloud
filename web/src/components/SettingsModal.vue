@@ -1,5 +1,6 @@
 <script setup>
 import { ref, watch, computed } from 'vue';
+import { formatSize } from '../utils/formatting';
 
 const props = defineProps({
   open: {
@@ -17,6 +18,14 @@ const props = defineProps({
   status: {
     type: Object,
     required: true,
+  },
+  apiInfo: {
+    type: Object,
+    default: null,
+  },
+  uploadOverwrite: {
+    type: Boolean,
+    default: false,
   },
   onClose: {
     type: Function,
@@ -46,6 +55,10 @@ const props = defineProps({
     type: Function,
     required: true,
   },
+  onUploadOverwriteChange: {
+    type: Function,
+    required: true,
+  },
   formatDate: {
     type: Function,
     required: true,
@@ -55,6 +68,7 @@ const props = defineProps({
 const tabs = [
   { id: 'general', label: 'General' },
   { id: 'drives', label: 'Drives' },
+  { id: 'uploads', label: 'Uploads' },
 ];
 const activeTab = ref('general');
 const draftRoots = ref([]);
@@ -62,6 +76,12 @@ const savingRoots = ref(false);
 const saveError = ref('');
 const savingScan = ref(false);
 const scanError = ref('');
+const uploadInfo = computed(() => props.apiInfo?.capabilities?.upload || null);
+const uploadEnabled = computed(() => uploadInfo.value?.enabled !== false);
+const uploadMaxBytes = computed(() => uploadInfo.value?.maxBytes || 0);
+const uploadMaxFiles = computed(() => uploadInfo.value?.maxFiles || 0);
+const uploadChunkBytes = computed(() => uploadInfo.value?.chunkBytes || 0);
+const uploadResume = computed(() => uploadInfo.value?.resume === true);
 
 const hasEmptyPath = computed(() =>
   draftRoots.value.some((root) => !(root.path || '').trim())
@@ -225,6 +245,43 @@ watch(
                 Use fast scan (skip unchanged folders)
               </label>
               <div v-if="scanError" class="settings-error">{{ scanError }}</div>
+            </div>
+          </div>
+          <div v-else-if="activeTab === 'uploads'" class="settings-view">
+            <div class="settings-panel">
+              <div class="settings-panel-title">Upload service</div>
+              <div class="settings-meta" v-if="apiInfo">
+                <div>Status: {{ uploadEnabled ? 'Enabled' : 'Disabled' }}</div>
+                <div>
+                  Max file size:
+                  {{ uploadMaxBytes ? formatSize(uploadMaxBytes) : 'Unlimited' }}
+                </div>
+                <div>Max files per batch: {{ uploadMaxFiles || 'Unlimited' }}</div>
+                <div>
+                  Server overwrite default:
+                  {{ uploadInfo?.overwriteByDefault ? 'On' : 'Off' }}
+                </div>
+                <div>Resume supported: {{ uploadResume ? 'Yes' : 'No' }}</div>
+                <div>
+                  Chunk size: {{ uploadChunkBytes ? formatSize(uploadChunkBytes) : 'Unknown' }}
+                </div>
+                <div>API version: {{ apiInfo.apiVersion }}</div>
+              </div>
+              <div v-else class="settings-hint">Loading upload settings...</div>
+            </div>
+            <div class="settings-panel">
+              <div class="settings-panel-title">Client defaults</div>
+              <label class="settings-toggle">
+                <input
+                  type="checkbox"
+                  :checked="uploadOverwrite"
+                  @change="onUploadOverwriteChange($event.target.checked)"
+                />
+                Overwrite existing files when uploading
+              </label>
+              <div class="settings-hint">
+                This preference only affects uploads from this browser.
+              </div>
             </div>
           </div>
           <div v-else class="settings-view">

@@ -1,21 +1,31 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { pipeline } = require('stream/promises');
 const Fastify = require('fastify');
 const fastifyStatic = require('@fastify/static');
+const fastifyMultipart = require('@fastify/multipart');
 const mime = require('mime-types');
 const archiver = require('archiver');
 
 const { loadConfig } = require('./config');
 const { initDb, ENTRY_SELECT } = require('./db');
 const { createIndexer } = require('./indexer');
-const { safeJoin, normalizeRelPath } = require('./utils');
+const { safeJoin, normalizeRelPath, normalizeParent } = require('./utils');
 const { previewCachePath, ensurePreview } = require('./preview');
 
 const projectRoot = path.resolve(__dirname, '..');
 const config = loadConfig(projectRoot);
 const configPath = path.join(projectRoot, 'config.json');
 const ALL_ROOTS_ID = '__all__';
+const API_VERSION = 1;
+const UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024;
+const TRASH_RETENTION_MS = Math.max(0, config.trashRetentionDays || 0) * 24 * 60 * 60 * 1000;
+
+const serverPackagePath = path.join(__dirname, 'package.json');
+const serverVersion = fs.existsSync(serverPackagePath)
+  ? JSON.parse(fs.readFileSync(serverPackagePath, 'utf8')).version || '0.0.0'
+  : '0.0.0';
 
 function makePrefixLike(rawPrefix) {
   const normalized = normalizeRelPath(rawPrefix || '');
@@ -296,11 +306,41 @@ async function clearPreviewCache(dirPath) {
 
 ensureDir(path.dirname(config.dbPath));
 ensureDir(config.previewDir);
+ensureDir(config.uploadTempDir);
+ensureDir(config.trashDir);
 
 const db = initDb(config.dbPath);
 
 const fastify = Fastify({
   logger: true,
+});
+
+fastify.addContentTypeParser(
+  'application/octet-stream',
+  { parseAs: 'buffer' },
+  (req, payload, done) => {
+    done(null, payload);
+  }
+);
+
+const multipartLimits = {};
+if (config.uploadMaxBytes > 0) {
+  multipartLimits.fileSize = config.uploadMaxBytes;
+}
+if (config.uploadMaxFiles > 0) {
+  multipartLimits.files = config.uploadMaxFiles;
+}
+
+fastify.register(fastifyMultipart, {
+  limits: multipartLimits,
+});
+
+fastify.addHook('onSend', async (request, reply, payload) => {
+  if (request.raw.url.startsWith('/api')) {
+    reply.header('X-Api-Version', API_VERSION);
+    reply.header('X-Server-Version', serverVersion);
+  }
+  return payload;
 });
 
 const sessions = new Map();
@@ -319,6 +359,211 @@ function getBearerToken(request) {
 
 function getRequestToken(request) {
   return getBearerToken(request) || request.query?.token || null;
+}
+
+function parseBoolean(value, defaultValue = false) {
+  if (value === undefined || value === null) {
+    return defaultValue;
+  }
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  const normalized = String(value).trim().toLowerCase();
+  if (normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'on') {
+    return true;
+  }
+  if (normalized === 'false' || normalized === '0' || normalized === 'no' || normalized === 'off') {
+    return false;
+  }
+  return defaultValue;
+}
+
+function parseSize(value) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return null;
+  }
+  return parsed;
+}
+
+function uploadIdFor(rootId, relPath, size) {
+  return crypto
+    .createHash('sha1')
+    .update(`${rootId}::${relPath}::${size}`)
+    .digest('hex');
+}
+
+function uploadTempPath(uploadId) {
+  return path.join(config.uploadTempDir, `${uploadId}.part`);
+}
+
+function trashRelName(rootId, relPath) {
+  const base = path.basename(relPath || '') || 'item';
+  const safeBase = base.replace(/[^\w.\-() ]+/g, '_');
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const nonce = crypto.randomBytes(3).toString('hex');
+  return path.join(rootId, `${stamp}-${nonce}-${safeBase}`);
+}
+
+async function movePath(sourcePath, targetPath, isDir) {
+  await fs.promises.mkdir(path.dirname(targetPath), { recursive: true });
+  try {
+    await fs.promises.rename(sourcePath, targetPath);
+    return;
+  } catch (error) {
+    if (error.code !== 'EXDEV') {
+      throw error;
+    }
+  }
+  if (isDir) {
+    await fs.promises.cp(sourcePath, targetPath, { recursive: true });
+    await fs.promises.rm(sourcePath, { recursive: true, force: true });
+  } else {
+    await fs.promises.copyFile(sourcePath, targetPath);
+    await fs.promises.unlink(sourcePath);
+  }
+}
+
+async function upsertUploadedFile({ root, relPath, fullPath }) {
+  let stats;
+  try {
+    stats = await fs.promises.stat(fullPath);
+  } catch {
+    return;
+  }
+  if (!stats.isFile()) {
+    return;
+  }
+  const name = path.basename(relPath);
+  const ext = path.extname(name).toLowerCase();
+  let mimeType = mime.lookup(ext) || null;
+  if (!mimeType && ext === '.opus') {
+    mimeType = 'audio/opus';
+  }
+  const safeMime = mimeType || 'application/octet-stream';
+  db.upsertEntry.run({
+    root_id: root.id,
+    rel_path: relPath,
+    parent: normalizeParent(relPath),
+    name,
+    ext,
+    size: stats.size,
+    mtime: Math.floor(stats.mtimeMs),
+    mime: safeMime,
+    is_dir: 0,
+    scan_id: Date.now(),
+    title: null,
+    artist: null,
+    album: null,
+    duration: null,
+    album_key: null,
+    content_hash: null,
+    hash_alg: null,
+    inode: Number.isFinite(stats.ino) ? stats.ino : null,
+    device: Number.isFinite(stats.dev) ? stats.dev : null,
+  });
+}
+
+async function removeTrashEntry(entry) {
+  if (!entry?.trash_rel_path) {
+    return;
+  }
+  const trashFull = path.join(config.trashDir, entry.trash_rel_path);
+  try {
+    const stats = await fs.promises.lstat(trashFull);
+    if (stats.isDirectory()) {
+      await fs.promises.rm(trashFull, { recursive: true, force: true });
+    } else {
+      await fs.promises.unlink(trashFull);
+    }
+  } catch {
+    // Ignore missing files.
+  }
+  db.deleteTrashById.run(entry.id);
+}
+
+async function purgeTrash({ rootId = null, olderThan = null } = {}) {
+  let query = 'SELECT id, root_id, rel_path, is_dir, trash_rel_path FROM trash_entries';
+  const params = [];
+  const clauses = [];
+  if (rootId) {
+    clauses.push('root_id = ?');
+    params.push(rootId);
+  }
+  if (typeof olderThan === 'number') {
+    clauses.push('deleted_at < ?');
+    params.push(olderThan);
+  }
+  if (clauses.length) {
+    query += ` WHERE ${clauses.join(' AND ')}`;
+  }
+  const entries = db.db.prepare(query).all(...params);
+  for (const entry of entries) {
+    await removeTrashEntry(entry);
+  }
+  return entries.length;
+}
+
+async function finalizeUpload({ partPath, fullPath, overwrite }) {
+  const targetDir = path.dirname(fullPath);
+  await fs.promises.mkdir(targetDir, { recursive: true });
+  let existing = null;
+  try {
+    existing = await fs.promises.lstat(fullPath);
+  } catch (error) {
+    if (error.code !== 'ENOENT') {
+      throw error;
+    }
+  }
+  if (existing) {
+    if (existing.isDirectory()) {
+      return { ok: false, error: 'Target is a directory', conflict: true };
+    }
+    if (existing.isSymbolicLink()) {
+      return { ok: false, error: 'Target is a symlink', conflict: true };
+    }
+    if (!overwrite) {
+      return { ok: false, error: 'File already exists', conflict: true };
+    }
+    await fs.promises.unlink(fullPath);
+  }
+  try {
+    await fs.promises.rename(partPath, fullPath);
+  } catch (error) {
+    if (error.code !== 'EXDEV') {
+      throw error;
+    }
+    await fs.promises.copyFile(partPath, fullPath);
+    await fs.promises.unlink(partPath);
+  }
+  return { ok: true };
+}
+
+async function ensureEmptyFile(fullPath, overwrite) {
+  const targetDir = path.dirname(fullPath);
+  await fs.promises.mkdir(targetDir, { recursive: true });
+  let existing = null;
+  try {
+    existing = await fs.promises.lstat(fullPath);
+  } catch (error) {
+    if (error.code !== 'ENOENT') {
+      throw error;
+    }
+  }
+  if (existing) {
+    if (existing.isDirectory()) {
+      return { ok: false, error: 'Target is a directory', conflict: true };
+    }
+    if (existing.isSymbolicLink()) {
+      return { ok: false, error: 'Target is a symlink', conflict: true };
+    }
+    if (!overwrite) {
+      return { ok: false, error: 'File already exists', conflict: true };
+    }
+    await fs.promises.unlink(fullPath);
+  }
+  await fs.promises.writeFile(fullPath, '');
+  return { ok: true };
 }
 
 fastify.addHook('onRequest', async (request, reply) => {
@@ -340,7 +585,50 @@ fastify.addHook('onRequest', async (request, reply) => {
 });
 
 fastify.get('/api/health', async () => {
-  return { status: 'ok', devMode: config.devMode };
+  return {
+    status: 'ok',
+    devMode: config.devMode,
+    apiVersion: API_VERSION,
+    serverVersion,
+  };
+});
+
+fastify.get('/api/info', async () => {
+  const maxBytes = config.uploadMaxBytes > 0 ? config.uploadMaxBytes : null;
+  const maxFiles = config.uploadMaxFiles > 0 ? config.uploadMaxFiles : null;
+  return {
+    apiVersion: API_VERSION,
+    serverVersion,
+    devMode: config.devMode,
+    serverTime: new Date().toISOString(),
+    auth: {
+      required: !config.devMode,
+      mode: 'bearer',
+    },
+    capabilities: {
+      roots: true,
+      search: true,
+      media: true,
+      albums: true,
+      previews: true,
+      zip: true,
+      upload: {
+        enabled: config.uploadEnabled,
+        maxBytes,
+        maxFiles,
+        overwriteByDefault: config.uploadOverwrite,
+        pathParam: true,
+        chunked: true,
+        resume: true,
+        chunkBytes: UPLOAD_CHUNK_BYTES,
+        protocol: 'chunked-v1',
+      },
+      trash: {
+        enabled: true,
+        retentionDays: config.trashRetentionDays || 0,
+      },
+    },
+  };
 });
 
 fastify.post('/api/login', async (request, reply) => {
@@ -416,6 +704,7 @@ fastify.get('/api/list', async (request, reply) => {
   const rows = db.listChildren.all(rootId, relPath, limit, offset);
   const total = db.countChildren.get(rootId, relPath)?.count || 0;
   const items = rows.map((row) => ({
+    rootId: row.root_id,
     path: row.rel_path,
     name: row.name,
     size: row.size,
@@ -800,6 +1089,695 @@ fastify.post('/api/previews/rebuild', async () => {
   return { ok: true };
 });
 
+fastify.get('/api/trash', async (request, reply) => {
+  const rootId = request.query.root || ALL_ROOTS_ID;
+  const limit = Math.min(parseInt(request.query.limit || '50', 10) || 50, 200);
+  const offset = Math.max(parseInt(request.query.offset || '0', 10) || 0, 0);
+  const rootMap = new Map(config.roots.map((root) => [root.id, root]));
+
+  let rows = [];
+  let total = 0;
+  if (rootId === ALL_ROOTS_ID) {
+    rows = db.listTrashAll.all(limit, offset);
+    total = db.countTrashAll.get()?.count || 0;
+  } else {
+    const root = rootMap.get(rootId);
+    if (!root) {
+      reply.code(400);
+      return { error: 'Invalid root' };
+    }
+    rows = db.listTrashByRoot.all(rootId, limit, offset);
+    total = db.countTrashByRoot.get(rootId)?.count || 0;
+  }
+
+  const items = rows.map((row) => ({
+    trashId: row.id,
+    rootId: row.root_id,
+    rootName: rootMap.get(row.root_id)?.name || row.root_id,
+    path: row.rel_path,
+    name: row.name,
+    size: row.size,
+    mime: row.mime,
+    ext: row.ext,
+    isDir: Boolean(row.is_dir),
+    deletedAt: row.deleted_at,
+  }));
+
+  return { items, total };
+});
+
+fastify.get('/api/trash/file', async (request, reply) => {
+  const trashId = parseInt(request.query.id || request.query.trashId, 10);
+  if (!Number.isFinite(trashId)) {
+    reply.code(400);
+    return { error: 'Invalid trash id' };
+  }
+  const entry = db.db
+    .prepare(
+      'SELECT id, rel_path, is_dir, mime, trash_rel_path FROM trash_entries WHERE id = ?'
+    )
+    .get(trashId);
+  if (!entry) {
+    reply.code(404);
+    return { error: 'Not found' };
+  }
+  if (entry.is_dir) {
+    reply.code(400);
+    return { error: 'Directory requested' };
+  }
+  const fullPath = path.join(config.trashDir, entry.trash_rel_path);
+  let stats;
+  try {
+    stats = await fs.promises.stat(fullPath);
+  } catch {
+    reply.code(404);
+    return { error: 'Not found' };
+  }
+  const mimeType = entry.mime || mime.lookup(fullPath) || 'application/octet-stream';
+  const ext = path.extname(entry.rel_path || '').toLowerCase();
+  const resolvedMime = mimeType === 'application/octet-stream' && ext === '.opus'
+    ? 'audio/opus'
+    : mimeType;
+  const wantsDownload = request.query.download === '1' || request.query.download === 'true';
+  if (wantsDownload) {
+    reply.header(
+      'Content-Disposition',
+      `attachment; filename="${safeAttachmentName(entry.rel_path)}"`
+    );
+  }
+  const range = request.headers.range;
+  if (range) {
+    const match = /bytes=(\\d*)-(\\d*)/.exec(range);
+    if (match) {
+      const start = match[1] ? parseInt(match[1], 10) : 0;
+      const end = match[2] ? parseInt(match[2], 10) : stats.size - 1;
+      if (start >= stats.size || end >= stats.size) {
+        reply.code(416);
+        reply.header('Content-Range', `bytes */${stats.size}`);
+        return;
+      }
+      reply.code(206);
+      reply.header('Content-Range', `bytes ${start}-${end}/${stats.size}`);
+      reply.header('Accept-Ranges', 'bytes');
+      reply.header('Content-Length', end - start + 1);
+      reply.header('Content-Type', resolvedMime);
+      return reply.send(fs.createReadStream(fullPath, { start, end }));
+    }
+  }
+
+  reply.header('Content-Type', resolvedMime);
+  return reply.send(fs.createReadStream(fullPath));
+});
+
+fastify.post('/api/delete', async (request, reply) => {
+  const { root: rootId, paths } = request.body || {};
+  const root = config.roots.find((item) => item.id === rootId);
+  if (!root || !Array.isArray(paths) || paths.length === 0) {
+    reply.code(400);
+    return { error: 'Invalid request' };
+  }
+
+  const results = { moved: 0, skipped: 0, errors: [] };
+  const touchedDirs = new Set();
+
+  for (const relPathRaw of paths) {
+    const relPath = normalizeRelPath(relPathRaw);
+    if (!relPath) {
+      results.skipped += 1;
+      results.errors.push({ path: relPathRaw || '', error: 'Invalid path' });
+      continue;
+    }
+    const fullPath = safeJoin(root.absPath, relPath);
+    if (!fullPath) {
+      results.skipped += 1;
+      results.errors.push({ path: relPath, error: 'Invalid path' });
+      continue;
+    }
+    let stats;
+    try {
+      stats = await fs.promises.lstat(fullPath);
+    } catch {
+      results.skipped += 1;
+      results.errors.push({ path: relPath, error: 'Not found' });
+      continue;
+    }
+    if (stats.isSymbolicLink()) {
+      results.skipped += 1;
+      results.errors.push({ path: relPath, error: 'Symlink not supported' });
+      continue;
+    }
+
+    const trashRel = trashRelName(root.id, relPath);
+    const trashFull = path.join(config.trashDir, trashRel);
+    try {
+      await movePath(fullPath, trashFull, stats.isDirectory());
+    } catch (error) {
+      results.skipped += 1;
+      results.errors.push({ path: relPath, error: 'Failed to move to trash' });
+      continue;
+    }
+
+    const ext = stats.isDirectory() ? '' : path.extname(relPath).toLowerCase();
+    let mimeType = stats.isDirectory() ? null : mime.lookup(ext);
+    if (!mimeType && ext === '.opus') {
+      mimeType = 'audio/opus';
+    }
+    db.insertTrashEntry.run({
+      root_id: root.id,
+      rel_path: relPath,
+      name: path.basename(relPath),
+      ext,
+      size: stats.isDirectory() ? 0 : stats.size,
+      mime: stats.isDirectory() ? null : mimeType || 'application/octet-stream',
+      is_dir: stats.isDirectory() ? 1 : 0,
+      deleted_at: Date.now(),
+      trash_rel_path: trashRel,
+    });
+
+    if (stats.isDirectory()) {
+      const prefixLike = `${relPath}/%`;
+      db.deleteEntriesByPrefix.run(root.id, relPath, prefixLike);
+    } else {
+      db.deleteEntryByPath.run(root.id, relPath);
+    }
+    results.moved += 1;
+    touchedDirs.add(normalizeParent(relPath));
+  }
+
+  for (const relPath of touchedDirs) {
+    await indexer.scanPath({ root, relPath, fastScan: true });
+  }
+
+  return { ok: true, rootId, ...results };
+});
+
+fastify.post('/api/trash/restore', async (request, reply) => {
+  const ids = Array.isArray(request.body?.ids) ? request.body.ids : [];
+  if (!ids.length) {
+    reply.code(400);
+    return { error: 'No items selected' };
+  }
+  const placeholders = ids.map(() => '?').join(', ');
+  const rows = db.db
+    .prepare(
+      `SELECT id, root_id, rel_path, is_dir, trash_rel_path FROM trash_entries WHERE id IN (${placeholders})`
+    )
+    .all(...ids);
+
+  const results = { restored: 0, skipped: 0, errors: [] };
+  for (const entry of rows) {
+    const root = config.roots.find((item) => item.id === entry.root_id);
+    if (!root) {
+      results.skipped += 1;
+      results.errors.push({ id: entry.id, error: 'Root not found' });
+      continue;
+    }
+    const targetRel = normalizeRelPath(entry.rel_path);
+    const fullPath = safeJoin(root.absPath, targetRel);
+    if (!fullPath) {
+      results.skipped += 1;
+      results.errors.push({ id: entry.id, error: 'Invalid path' });
+      continue;
+    }
+    let exists = false;
+    try {
+      const stats = await fs.promises.lstat(fullPath);
+      if (stats) {
+        exists = true;
+      }
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        results.skipped += 1;
+        results.errors.push({ id: entry.id, error: 'Failed to access target' });
+        continue;
+      }
+    }
+    if (exists) {
+      results.skipped += 1;
+      results.errors.push({ id: entry.id, error: 'Target already exists' });
+      continue;
+    }
+    const trashFull = path.join(config.trashDir, entry.trash_rel_path);
+    try {
+      await movePath(trashFull, fullPath, Boolean(entry.is_dir));
+      db.deleteTrashById.run(entry.id);
+      await upsertUploadedFile({ root, relPath: targetRel, fullPath });
+      await indexer.scanPath({ root, relPath: targetRel, fastScan: false });
+      results.restored += 1;
+    } catch (error) {
+      results.skipped += 1;
+      results.errors.push({ id: entry.id, error: 'Failed to restore' });
+    }
+  }
+
+  return { ok: true, ...results };
+});
+
+fastify.post('/api/trash/delete', async (request, reply) => {
+  const ids = Array.isArray(request.body?.ids) ? request.body.ids : [];
+  if (!ids.length) {
+    reply.code(400);
+    return { error: 'No items selected' };
+  }
+  const placeholders = ids.map(() => '?').join(', ');
+  const rows = db.db
+    .prepare(
+      `SELECT id, root_id, rel_path, is_dir, trash_rel_path FROM trash_entries WHERE id IN (${placeholders})`
+    )
+    .all(...ids);
+
+  const results = { deleted: 0, skipped: 0, errors: [] };
+  for (const entry of rows) {
+    try {
+      await removeTrashEntry(entry);
+      results.deleted += 1;
+    } catch {
+      results.skipped += 1;
+      results.errors.push({ id: entry.id, error: 'Failed to delete' });
+    }
+  }
+  return { ok: true, ...results };
+});
+
+fastify.post('/api/trash/clear', async (request, reply) => {
+  const rootId = request.body?.root || ALL_ROOTS_ID;
+  if (rootId !== ALL_ROOTS_ID && !config.roots.find((item) => item.id === rootId)) {
+    reply.code(400);
+    return { error: 'Invalid root' };
+  }
+  const count = await purgeTrash({ rootId: rootId === ALL_ROOTS_ID ? null : rootId });
+  return { ok: true, cleared: count };
+});
+
+fastify.post('/api/upload', async (request, reply) => {
+  if (!config.uploadEnabled) {
+    reply.code(403);
+    return { error: 'Uploads are disabled.' };
+  }
+  if (!request.isMultipart()) {
+    reply.code(415);
+    return { error: 'Multipart/form-data required.' };
+  }
+
+  const rootId = request.query.root;
+  const root = config.roots.find((item) => item.id === rootId);
+  if (!root) {
+    reply.code(400);
+    return { error: 'Invalid root' };
+  }
+
+  const basePath = normalizeRelPath(request.query.path || '');
+  const overwrite = parseBoolean(request.query.overwrite, config.uploadOverwrite);
+  const baseFull = safeJoin(root.absPath, basePath);
+  if (!baseFull) {
+    reply.code(400);
+    return { error: 'Invalid path' };
+  }
+
+  const results = {
+    received: 0,
+    stored: 0,
+    skipped: 0,
+    errors: [],
+  };
+  const touchedDirs = new Set();
+
+  try {
+    for await (const part of request.parts()) {
+      if (!part.file) {
+        continue;
+      }
+      results.received += 1;
+
+      const rawName = typeof part.filename === 'string' ? part.filename : '';
+      const cleanedName = normalizeRelPath(rawName.replace(/\\/g, '/'));
+      if (!cleanedName) {
+        results.skipped += 1;
+        results.errors.push({ file: rawName || '', error: 'Missing filename' });
+        part.file.resume();
+        continue;
+      }
+
+      const targetRel = normalizeRelPath(path.posix.join(basePath, cleanedName));
+      const fullPath = safeJoin(root.absPath, targetRel);
+      if (!fullPath) {
+        results.skipped += 1;
+        results.errors.push({ file: cleanedName, error: 'Invalid path' });
+        part.file.resume();
+        continue;
+      }
+
+      const targetDir = path.dirname(fullPath);
+      try {
+        await fs.promises.mkdir(targetDir, { recursive: true });
+      } catch (error) {
+        results.skipped += 1;
+        results.errors.push({ file: cleanedName, error: 'Failed to create folder' });
+        part.file.resume();
+        continue;
+      }
+
+      let existing = null;
+      try {
+        existing = await fs.promises.lstat(fullPath);
+      } catch (error) {
+        if (error.code !== 'ENOENT') {
+          results.skipped += 1;
+          results.errors.push({ file: cleanedName, error: 'Failed to access target' });
+          part.file.resume();
+          continue;
+        }
+      }
+
+      if (existing) {
+        if (existing.isDirectory()) {
+          results.skipped += 1;
+          results.errors.push({ file: cleanedName, error: 'Target is a directory' });
+          part.file.resume();
+          continue;
+        }
+        if (existing.isSymbolicLink()) {
+          results.skipped += 1;
+          results.errors.push({ file: cleanedName, error: 'Target is a symlink' });
+          part.file.resume();
+          continue;
+        }
+        if (!overwrite) {
+          results.skipped += 1;
+          results.errors.push({ file: cleanedName, error: 'File already exists' });
+          part.file.resume();
+          continue;
+        }
+      }
+
+      try {
+        await pipeline(part.file, fs.createWriteStream(fullPath, { flags: overwrite ? 'w' : 'wx' }));
+      } catch (error) {
+        results.skipped += 1;
+        results.errors.push({ file: cleanedName, error: 'Failed to write file' });
+        part.file.resume();
+        continue;
+      }
+
+      if (part.file.truncated) {
+        try {
+          await fs.promises.unlink(fullPath);
+        } catch {
+          // Best effort cleanup.
+        }
+        results.skipped += 1;
+        results.errors.push({ file: cleanedName, error: 'File exceeds upload limit' });
+        continue;
+      }
+
+      results.stored += 1;
+      await upsertUploadedFile({ root, relPath: targetRel, fullPath });
+      touchedDirs.add(normalizeParent(targetRel));
+    }
+  } catch (error) {
+    fastify.log.error({ err: error }, 'Upload failed');
+    reply.code(error?.code === 'FST_REQ_FILE_TOO_LARGE' ? 413 : 400);
+    return { error: 'Upload failed' };
+  }
+
+  if (results.received === 0) {
+    reply.code(400);
+    return { error: 'No files uploaded' };
+  }
+
+  if (results.stored > 0) {
+    const scanOptions = { fastScan: true };
+    for (const relPath of touchedDirs) {
+      await indexer.scanPath({ root, relPath, ...scanOptions });
+    }
+  }
+
+  return {
+    ok: true,
+    rootId,
+    path: basePath,
+    overwrite,
+    ...results,
+  };
+});
+
+fastify.get('/api/upload/status', async (request, reply) => {
+  if (!config.uploadEnabled) {
+    reply.code(403);
+    return { error: 'Uploads are disabled.' };
+  }
+  const rootId = request.query.root;
+  const root = config.roots.find((item) => item.id === rootId);
+  if (!root) {
+    reply.code(400);
+    return { error: 'Invalid root' };
+  }
+
+  const basePath = normalizeRelPath(request.query.path || '');
+  const fileRelRaw = typeof request.query.file === 'string' ? request.query.file : '';
+  const fileRel = normalizeRelPath(fileRelRaw.replace(/\\/g, '/'));
+  if (!fileRel) {
+    reply.code(400);
+    return { error: 'Missing file name' };
+  }
+
+  const size = parseSize(request.query.size);
+  if (size === null) {
+    reply.code(400);
+    return { error: 'Invalid size' };
+  }
+  const overwrite = parseBoolean(request.query.overwrite, config.uploadOverwrite);
+
+  const targetRel = normalizeRelPath(path.posix.join(basePath, fileRel));
+  const fullPath = safeJoin(root.absPath, targetRel);
+  if (!fullPath) {
+    reply.code(400);
+    return { error: 'Invalid path' };
+  }
+
+  if (size === 0) {
+    try {
+      const result = await ensureEmptyFile(fullPath, overwrite);
+      if (!result.ok) {
+        reply.code(409);
+        return { error: result.error, status: 'exists' };
+      }
+      await upsertUploadedFile({ root, relPath: targetRel, fullPath });
+      await indexer.scanPath({ root, relPath: normalizeParent(targetRel), fastScan: true });
+      return { status: 'complete', uploadId: null, offset: 0, size };
+    } catch (error) {
+      reply.code(500);
+      return { error: 'Failed to create file' };
+    }
+  }
+
+  let existing = null;
+  try {
+    existing = await fs.promises.lstat(fullPath);
+  } catch (error) {
+    if (error.code !== 'ENOENT') {
+      reply.code(500);
+      return { error: 'Failed to access target' };
+    }
+  }
+  if (existing) {
+    if (existing.isDirectory()) {
+      reply.code(409);
+      return { error: 'Target is a directory', status: 'exists' };
+    }
+    if (existing.isSymbolicLink()) {
+      reply.code(409);
+      return { error: 'Target is a symlink', status: 'exists' };
+    }
+    if (!overwrite) {
+      reply.code(409);
+      return { error: 'File already exists', status: 'exists' };
+    }
+  }
+
+  const uploadId = uploadIdFor(rootId, targetRel, size);
+  const partPath = uploadTempPath(uploadId);
+
+  let offset = 0;
+  try {
+    const stats = await fs.promises.stat(partPath);
+    offset = stats.size;
+  } catch (error) {
+    if (error.code !== 'ENOENT') {
+      reply.code(500);
+      return { error: 'Failed to inspect upload' };
+    }
+  }
+
+  if (offset > size) {
+    try {
+      await fs.promises.unlink(partPath);
+    } catch {
+      // ignore cleanup failures
+    }
+    offset = 0;
+  }
+
+  if (offset === size) {
+    try {
+      const result = await finalizeUpload({ partPath, fullPath, overwrite });
+      if (!result.ok) {
+        reply.code(409);
+        return { error: result.error, status: 'exists' };
+      }
+      await upsertUploadedFile({ root, relPath: targetRel, fullPath });
+    } catch (error) {
+      reply.code(500);
+      return { error: 'Failed to finalize upload' };
+    }
+    return { status: 'complete', uploadId, offset: size, size };
+  }
+
+  return { status: 'ready', uploadId, offset, size };
+});
+
+fastify.post('/api/upload/chunk', { bodyLimit: UPLOAD_CHUNK_BYTES + 1024 }, async (request, reply) => {
+  if (!config.uploadEnabled) {
+    reply.code(403);
+    return { error: 'Uploads are disabled.' };
+  }
+  const rootId = request.query.root;
+  const root = config.roots.find((item) => item.id === rootId);
+  if (!root) {
+    reply.code(400);
+    return { error: 'Invalid root' };
+  }
+
+  const basePath = normalizeRelPath(request.query.path || '');
+  const fileRelRaw = typeof request.query.file === 'string' ? request.query.file : '';
+  const fileRel = normalizeRelPath(fileRelRaw.replace(/\\/g, '/'));
+  if (!fileRel) {
+    reply.code(400);
+    return { error: 'Missing file name' };
+  }
+
+  const size = parseSize(request.query.size);
+  if (size === null) {
+    reply.code(400);
+    return { error: 'Invalid size' };
+  }
+  const offset = parseSize(request.query.offset);
+  if (offset === null) {
+    reply.code(400);
+    return { error: 'Invalid offset' };
+  }
+  const overwrite = parseBoolean(request.query.overwrite, config.uploadOverwrite);
+
+  const targetRel = normalizeRelPath(path.posix.join(basePath, fileRel));
+  const fullPath = safeJoin(root.absPath, targetRel);
+  if (!fullPath) {
+    reply.code(400);
+    return { error: 'Invalid path' };
+  }
+
+  if (size === 0) {
+    try {
+      const result = await ensureEmptyFile(fullPath, overwrite);
+      if (!result.ok) {
+        reply.code(409);
+        return { error: result.error, status: 'exists' };
+      }
+      await upsertUploadedFile({ root, relPath: targetRel, fullPath });
+      return { ok: true, offset: 0, complete: true };
+    } catch (error) {
+      reply.code(500);
+      return { error: 'Failed to create file' };
+    }
+  }
+
+  let existing = null;
+  try {
+    existing = await fs.promises.lstat(fullPath);
+  } catch (error) {
+    if (error.code !== 'ENOENT') {
+      reply.code(500);
+      return { error: 'Failed to access target' };
+    }
+  }
+  if (existing && !overwrite) {
+    reply.code(409);
+    return { error: 'File already exists', status: 'exists' };
+  }
+
+  const uploadId = uploadIdFor(rootId, targetRel, size);
+  const partPath = uploadTempPath(uploadId);
+
+  let currentSize = 0;
+  try {
+    const stats = await fs.promises.stat(partPath);
+    currentSize = stats.size;
+  } catch (error) {
+    if (error.code !== 'ENOENT') {
+      reply.code(500);
+      return { error: 'Failed to inspect upload' };
+    }
+  }
+
+  if (currentSize !== offset) {
+    reply.code(409);
+    return { error: 'Offset mismatch', expectedOffset: currentSize };
+  }
+  if (offset > size) {
+    reply.code(400);
+    return { error: 'Offset beyond file size' };
+  }
+
+  try {
+    await fs.promises.mkdir(path.dirname(partPath), { recursive: true });
+    const body = request.body;
+    if (!body || !(Buffer.isBuffer(body) || typeof body === 'string')) {
+      reply.code(400);
+      return { error: 'Missing chunk body' };
+    }
+    const chunkBuffer = Buffer.isBuffer(body) ? body : Buffer.from(body);
+    await fs.promises.writeFile(partPath, chunkBuffer, { flag: 'a' });
+  } catch (error) {
+    reply.code(500);
+    return { error: 'Failed to write chunk' };
+  }
+
+  let newSize = currentSize;
+  try {
+    newSize = (await fs.promises.stat(partPath)).size;
+  } catch (error) {
+    reply.code(500);
+    return { error: 'Failed to read upload state' };
+  }
+
+  if (newSize > size) {
+    try {
+      await fs.promises.unlink(partPath);
+    } catch {
+      // ignore cleanup failures
+    }
+    reply.code(400);
+    return { error: 'Upload exceeded declared size' };
+  }
+
+  if (newSize === size) {
+    try {
+      const result = await finalizeUpload({ partPath, fullPath, overwrite });
+      if (!result.ok) {
+        reply.code(409);
+        return { error: result.error, status: 'exists' };
+      }
+    } catch (error) {
+      reply.code(500);
+      return { error: 'Failed to finalize upload' };
+    }
+    await upsertUploadedFile({ root, relPath: targetRel, fullPath });
+    await indexer.scanPath({ root, relPath: normalizeParent(targetRel), fastScan: true });
+    return { ok: true, offset: newSize, complete: true };
+  }
+
+  return { ok: true, offset: newSize, complete: false };
+});
+
 fastify.get('/api/file', async (request, reply) => {
   const rootId = request.query.root;
   const relPath = normalizeRelPath(request.query.path || '');
@@ -1133,6 +2111,22 @@ if (fs.existsSync(staticRoot)) {
 
 const indexer = createIndexer(config, db, fastify.log);
 indexer.start();
+
+if (TRASH_RETENTION_MS > 0) {
+  const runCleanup = async () => {
+    const cutoff = Date.now() - TRASH_RETENTION_MS;
+    try {
+      const removed = await purgeTrash({ olderThan: cutoff });
+      if (removed) {
+        fastify.log.info({ removed }, 'Trash cleanup completed');
+      }
+    } catch (error) {
+      fastify.log.error({ err: error }, 'Trash cleanup failed');
+    }
+  };
+  runCleanup();
+  setInterval(runCleanup, 24 * 60 * 60 * 1000);
+}
 
 fastify.listen({ host: config.host, port: config.port }, (err, address) => {
   if (err) {

@@ -20,6 +20,8 @@ const musicJump = ref({ rootId: null, path: '', token: 0 });
 const photosJump = ref({ rootId: null, path: '', token: 0 });
 const settingsOpen = ref(false);
 const pageSize = ref(parseInt(localStorage.getItem('localCloudPageSize') || '50', 10) || 50);
+const apiInfo = ref(null);
+const uploadOverwrite = ref(localStorage.getItem('localCloudUploadOverwrite') === 'true');
 const status = ref({
   lastScanAt: null,
   scanInProgress: false,
@@ -31,6 +33,10 @@ const allRoot = computed(() => ({ id: '__all__', name: 'All Roots' }));
 const mediaRoot = computed(() => (currentView.value === 'files' ? currentRoot.value : allRoot.value));
 
 const isAuthenticated = computed(() => Boolean(token.value) || devMode.value);
+const uploadEnabled = computed(() => apiInfo.value?.capabilities?.upload?.enabled !== false);
+const uploadChunkBytes = computed(
+  () => apiInfo.value?.capabilities?.upload?.chunkBytes || 8 * 1024 * 1024
+);
 
 function setToken(value) {
   token.value = value || '';
@@ -41,12 +47,22 @@ function setToken(value) {
   }
 }
 
+function setUploadOverwrite(value) {
+  uploadOverwrite.value = Boolean(value);
+  localStorage.setItem('localCloudUploadOverwrite', uploadOverwrite.value ? 'true' : 'false');
+}
+
 async function apiFetch(url, options = {}) {
   const headers = new Headers(options.headers || {});
   if (token.value) {
     headers.set('Authorization', `Bearer ${token.value}`);
   }
-  if (options.body && !headers.has('Content-Type')) {
+  const isBinaryBody =
+    options.body instanceof FormData ||
+    options.body instanceof Blob ||
+    options.body instanceof ArrayBuffer ||
+    ArrayBuffer.isView(options.body);
+  if (options.body && !headers.has('Content-Type') && !isBinaryBody) {
     headers.set('Content-Type', 'application/json');
   }
   const response = await fetch(url, { ...options, headers });
@@ -91,6 +107,14 @@ async function loadStatus() {
   status.value = await res.json();
 }
 
+async function loadInfo() {
+  const res = await apiFetch('/api/info');
+  if (!res.ok) {
+    return;
+  }
+  apiInfo.value = await res.json();
+}
+
 async function updateScanSettings(nextSettings) {
   const res = await apiFetch('/api/scan/settings', {
     method: 'PUT',
@@ -124,6 +148,7 @@ async function loadRoots() {
     currentRoot.value = roots.value[0];
   }
   await loadStatus();
+  await loadInfo();
 }
 
 async function updateRoots(nextRoots) {
@@ -256,6 +281,7 @@ watch(token, (value) => {
     roots.value = [];
     currentRoot.value = null;
     currentView.value = 'files';
+    apiInfo.value = null;
   }
 });
 
@@ -340,6 +366,9 @@ watch(
       :current-root="currentRoot"
       :nav-state="filesNav"
       :page-size="pageSize"
+      :upload-enabled="uploadEnabled"
+      :upload-overwrite="uploadOverwrite"
+      :upload-chunk-bytes="uploadChunkBytes"
       :on-select-root="selectRoot"
       :on-open-in-music="openInMusic"
       :on-open-in-photos="openInPhotos"
@@ -372,11 +401,14 @@ watch(
       :roots="roots"
       :page-size="pageSize"
       :status="status"
+      :api-info="apiInfo"
+      :upload-overwrite="uploadOverwrite"
       :format-date="formatDate"
       :on-close="() => (settingsOpen = false)"
       :on-page-size-change="onPageSizeChange"
       :on-update-roots="updateRoots"
       :on-update-scan-settings="updateScanSettings"
+      :on-upload-overwrite-change="setUploadOverwrite"
       :on-rescan-files="() => rescan('files')"
       :on-rescan-music="() => rescan('music')"
       :on-rebuild-thumbs="rebuildThumbs"

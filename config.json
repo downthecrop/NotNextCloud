@@ -10,6 +10,9 @@
   "hashFiles": true,
   "devMode": true,
   "hostFsRoot": "/host",
+  "uploadMaxBytes": 0,
+  "uploadMaxFiles": 0,
+  "trashRetentionDays": 30,
   "roots": [
     {
       "id": "local",

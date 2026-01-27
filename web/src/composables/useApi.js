@@ -26,6 +26,11 @@ export function useApi() {
   const albumArtUrl = (rootId, key) =>
     withToken(`/api/album-art?root=${encodeURIComponent(rootId)}&key=${encodeURIComponent(key)}`);
 
+  const trashFileUrl = (trashId, download = false) => {
+    const base = `/api/trash/file?id=${encodeURIComponent(trashId)}`;
+    return withToken(download ? `${base}&download=1` : base);
+  };
+
   return {
     token,
     apiFetch,
@@ -34,5 +39,6 @@ export function useApi() {
     previewUrl,
     downloadUrl,
     albumArtUrl,
+    trashFileUrl,
   };
 }

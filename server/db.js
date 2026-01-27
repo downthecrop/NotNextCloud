@@ -74,8 +74,21 @@ function initDb(dbPath) {
       path TEXT NOT NULL,
       updated_at INTEGER
     );
+    CREATE TABLE IF NOT EXISTS trash_entries (
+      id INTEGER PRIMARY KEY,
+      root_id TEXT NOT NULL,
+      rel_path TEXT NOT NULL,
+      name TEXT,
+      ext TEXT,
+      size INTEGER,
+      mime TEXT,
+      is_dir INTEGER NOT NULL,
+      deleted_at INTEGER NOT NULL,
+      trash_rel_path TEXT NOT NULL
+    );
     CREATE INDEX IF NOT EXISTS idx_entries_root_parent ON entries (root_id, parent);
     CREATE INDEX IF NOT EXISTS idx_entries_root_name ON entries (root_id, name);
+    CREATE INDEX IF NOT EXISTS idx_trash_root ON trash_entries (root_id, deleted_at);
   `);
 
   const columns = new Set(db.pragma('table_info(entries)').map((col) => col.name));
@@ -445,6 +458,50 @@ function initDb(dbPath) {
       AND scan_id != ?
   `);
 
+  const insertTrashEntry = db.prepare(`
+    INSERT INTO trash_entries (
+      root_id, rel_path, name, ext, size, mime, is_dir, deleted_at, trash_rel_path
+    ) VALUES (
+      @root_id, @rel_path, @name, @ext, @size, @mime, @is_dir, @deleted_at, @trash_rel_path
+    )
+  `);
+
+  const listTrashByRoot = db.prepare(`
+    SELECT id, root_id, rel_path, name, ext, size, mime, is_dir, deleted_at, trash_rel_path
+    FROM trash_entries
+    WHERE root_id = ?
+    ORDER BY deleted_at DESC
+    LIMIT ? OFFSET ?
+  `);
+
+  const countTrashByRoot = db.prepare(`
+    SELECT COUNT(*) as count FROM trash_entries WHERE root_id = ?
+  `);
+
+  const listTrashAll = db.prepare(`
+    SELECT id, root_id, rel_path, name, ext, size, mime, is_dir, deleted_at, trash_rel_path
+    FROM trash_entries
+    ORDER BY deleted_at DESC
+    LIMIT ? OFFSET ?
+  `);
+
+  const countTrashAll = db.prepare(`
+    SELECT COUNT(*) as count FROM trash_entries
+  `);
+
+  const deleteTrashById = db.prepare(`
+    DELETE FROM trash_entries WHERE id = ?
+  `);
+
+  const deleteEntryByPath = db.prepare(`
+    DELETE FROM entries WHERE root_id = ? AND rel_path = ?
+  `);
+
+  const deleteEntriesByPrefix = db.prepare(`
+    DELETE FROM entries
+    WHERE root_id = ? AND (rel_path = ? OR rel_path LIKE ?)
+  `);
+
   return {
     db,
     upsertEntry,
@@ -488,6 +545,14 @@ function initDb(dbPath) {
     touchAll,
     cleanupOld,
     cleanupPrefix,
+    insertTrashEntry,
+    listTrashByRoot,
+    countTrashByRoot,
+    listTrashAll,
+    countTrashAll,
+    deleteTrashById,
+    deleteEntryByPath,
+    deleteEntriesByPrefix,
   };
 }
 
