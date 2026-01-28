@@ -17,8 +17,8 @@ function sendError(reply, status, code, message, details) {
   });
 }
 
-function sendList(items, total, limit, offset) {
-  return sendOk({ items, total, limit, offset });
+function sendList(items, total, limit, offset, nextCursor) {
+  return sendOk({ items, total, limit, offset, nextCursor: nextCursor || null });
 }
 
 module.exports = {

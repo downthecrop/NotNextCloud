@@ -1,6 +1,6 @@
-function listMediaAll({ db, entrySelect, rootIds, type, prefixLike, limit, offset }) {
+function listMediaAll({ db, entrySelect, rootIds, type, prefixLike, limit, offset, includeTotal }) {
   if (!rootIds.length) {
-    return { rows: [], total: 0 };
+    return { rows: [], total: includeTotal === false ? null : 0 };
   }
   const typeFilter = type === 'photos'
     ? "(mime LIKE 'image/%' OR mime LIKE 'video/%')"
@@ -13,8 +13,13 @@ function listMediaAll({ db, entrySelect, rootIds, type, prefixLike, limit, offse
   if (prefixLike) {
     params.push(prefixLike);
   }
-  const countSql = `SELECT COUNT(*) as count FROM entries WHERE ${baseWhere}`;
-  const total = db.prepare(countSql).get(...params)?.count || 0;
+  let total = 0;
+  if (includeTotal !== false) {
+    const countSql = `SELECT COUNT(*) as count FROM entries WHERE ${baseWhere}`;
+    total = db.prepare(countSql).get(...params)?.count || 0;
+  } else {
+    total = null;
+  }
   const dataSql = `
     ${entrySelect}
     WHERE ${baseWhere}
@@ -25,9 +30,287 @@ function listMediaAll({ db, entrySelect, rootIds, type, prefixLike, limit, offse
   return { rows, total };
 }
 
-function searchAll({ db, entrySelect, rootIds, type, like, prefixLike, limit, offset }) {
+function applyNameCursor({ where, params, cursor, prefix = '' }) {
+  if (!cursor) {
+    return { where, params };
+  }
+  const col = (name) => (prefix ? `${prefix}.${name}` : name);
+  where += ` AND (
+    ${col('is_dir')} < ?
+    OR (${col('is_dir')} = ? AND ${col('name')} COLLATE NOCASE > ?)
+    OR (${col('is_dir')} = ? AND ${col('name')} COLLATE NOCASE = ? AND ${col('root_id')} > ?)
+    OR (${col('is_dir')} = ? AND ${col('name')} COLLATE NOCASE = ? AND ${col('root_id')} = ? AND ${col('rel_path')} > ?)
+  )`;
+  params.push(
+    cursor.isDir,
+    cursor.isDir,
+    cursor.name,
+    cursor.isDir,
+    cursor.name,
+    cursor.rootId,
+    cursor.isDir,
+    cursor.name,
+    cursor.rootId,
+    cursor.path
+  );
+  return { where, params };
+}
+
+function applyMtimeCursor({ where, params, cursor, prefix = '' }) {
+  if (!cursor) {
+    return { where, params };
+  }
+  const col = (name) => (prefix ? `${prefix}.${name}` : name);
+  where += ` AND (
+    ${col('mtime')} < ?
+    OR (${col('mtime')} = ? AND ${col('name')} COLLATE NOCASE > ?)
+    OR (${col('mtime')} = ? AND ${col('name')} COLLATE NOCASE = ? AND ${col('root_id')} > ?)
+    OR (${col('mtime')} = ? AND ${col('name')} COLLATE NOCASE = ? AND ${col('root_id')} = ? AND ${col('rel_path')} > ?)
+  )`;
+  params.push(
+    cursor.mtime,
+    cursor.mtime,
+    cursor.name,
+    cursor.mtime,
+    cursor.name,
+    cursor.rootId,
+    cursor.mtime,
+    cursor.name,
+    cursor.rootId,
+    cursor.path
+  );
+  return { where, params };
+}
+
+function listChildrenCursor({ db, entrySelect, rootId, parent, limit, cursor }) {
+  const orderBy = 'ORDER BY is_dir DESC, name COLLATE NOCASE, rel_path';
+  let where = 'root_id = ? AND parent = ?';
+  const params = [rootId, parent];
+  if (cursor) {
+    where += ` AND (
+      is_dir < ?
+      OR (is_dir = ? AND name COLLATE NOCASE > ?)
+      OR (is_dir = ? AND name COLLATE NOCASE = ? AND rel_path > ?)
+    )`;
+    params.push(cursor.isDir, cursor.isDir, cursor.name, cursor.isDir, cursor.name, cursor.path);
+  }
+  const sql = `
+    ${entrySelect}
+    WHERE ${where}
+    ${orderBy}
+    LIMIT ?
+  `;
+  return db.prepare(sql).all(...params, limit);
+}
+
+function listMediaAllCursor({
+  db,
+  entrySelect,
+  rootIds,
+  type,
+  prefixLike,
+  limit,
+  cursor,
+  includeTotal,
+}) {
   if (!rootIds.length) {
-    return { rows: [], total: 0 };
+    return { rows: [], total: includeTotal === false ? null : 0 };
+  }
+  const typeFilter = type === 'photos'
+    ? "(mime LIKE 'image/%' OR mime LIKE 'video/%')"
+    : "mime LIKE 'audio/%'";
+  const placeholders = rootIds.map(() => '?').join(', ');
+  const rootClause = `root_id IN (${placeholders})`;
+  const prefixClause = prefixLike ? ' AND rel_path LIKE ?' : '';
+  const baseWhere = `${rootClause} AND is_dir = 0 AND ${typeFilter}${prefixClause}`;
+  const baseParams = [...rootIds];
+  if (prefixLike) {
+    baseParams.push(prefixLike);
+  }
+  let total = 0;
+  if (includeTotal !== false) {
+    const countSql = `SELECT COUNT(*) as count FROM entries WHERE ${baseWhere}`;
+    total = db.prepare(countSql).get(...baseParams)?.count || 0;
+  } else {
+    total = null;
+  }
+  let where = baseWhere;
+  const dataParams = [...baseParams];
+  ({ where, params: dataParams } = applyMtimeCursor({
+    where,
+    params: dataParams,
+    cursor,
+  }));
+  const dataSql = `
+    ${entrySelect}
+    WHERE ${where}
+    ORDER BY mtime DESC, name COLLATE NOCASE, root_id, rel_path
+    LIMIT ?
+  `;
+  const rows = db.prepare(dataSql).all(...dataParams, limit);
+  return { rows, total };
+}
+
+function sanitizeFtsTerm(term) {
+  return (term || '')
+    .replace(/["'`^~:\\/]/g, ' ')
+    .replace(/[()]/g, ' ')
+    .trim();
+}
+
+function buildFtsQuery(query, fields) {
+  const terms = String(query || '')
+    .trim()
+    .split(/\s+/)
+    .map((term) => sanitizeFtsTerm(term))
+    .filter(Boolean);
+  if (!terms.length) {
+    return '';
+  }
+  return terms
+    .map((term) => {
+      const clauses = fields.map((field) => `${field}:${term}*`);
+      if (clauses.length === 1) {
+        return clauses[0];
+      }
+      return `(${clauses.join(' OR ')})`;
+    })
+    .join(' AND ');
+}
+
+function searchFtsAll({
+  db,
+  entryColumns,
+  rootIds,
+  type,
+  ftsQuery,
+  prefixLike,
+  limit,
+  offset,
+  includeTotal,
+}) {
+  if (!rootIds.length || !ftsQuery) {
+    return { rows: [], total: includeTotal === false ? null : 0 };
+  }
+  const select = `SELECT ${entryColumns.map((col) => `entries.${col}`).join(', ')} `;
+  const join = 'FROM entries_fts JOIN entries ON entries.id = entries_fts.rowid';
+  const placeholders = rootIds.map(() => '?').join(', ');
+  const rootClause = `entries.root_id IN (${placeholders})`;
+  const prefixClause = prefixLike ? ' AND entries.rel_path LIKE ?' : '';
+  let typeClause = '';
+  let orderBy = 'ORDER BY entries.is_dir DESC, entries.name COLLATE NOCASE';
+  if (type === 'photos') {
+    typeClause = " AND entries.is_dir = 0 AND (entries.mime LIKE 'image/%' OR entries.mime LIKE 'video/%')";
+    orderBy = 'ORDER BY entries.mtime DESC, entries.name COLLATE NOCASE';
+  } else if (type === 'music') {
+    typeClause = " AND entries.is_dir = 0 AND entries.mime LIKE 'audio/%'";
+    orderBy = 'ORDER BY entries.mtime DESC, entries.name COLLATE NOCASE';
+  }
+  const where = `entries_fts MATCH ? AND ${rootClause}${typeClause}${prefixClause}`;
+  const params = [ftsQuery, ...rootIds];
+  if (prefixLike) {
+    params.push(prefixLike);
+  }
+  let total = 0;
+  if (includeTotal !== false) {
+    const countSql = `SELECT COUNT(*) as count ${join} WHERE ${where}`;
+    total = db.prepare(countSql).get(...params)?.count || 0;
+  } else {
+    total = null;
+  }
+  const dataSql = `
+    ${select}
+    ${join}
+    WHERE ${where}
+    ${orderBy}
+    LIMIT ? OFFSET ?
+  `;
+  const rows = db.prepare(dataSql).all(...params, limit, offset);
+  return { rows, total };
+}
+
+function searchFtsAllCursor({
+  db,
+  entryColumns,
+  rootIds,
+  type,
+  ftsQuery,
+  prefixLike,
+  limit,
+  cursor,
+  includeTotal,
+}) {
+  if (!rootIds.length || !ftsQuery) {
+    return { rows: [], total: includeTotal === false ? null : 0 };
+  }
+  const select = `SELECT ${entryColumns.map((col) => `entries.${col}`).join(', ')} `;
+  const join = 'FROM entries_fts JOIN entries ON entries.id = entries_fts.rowid';
+  const placeholders = rootIds.map(() => '?').join(', ');
+  const rootClause = `entries.root_id IN (${placeholders})`;
+  const prefixClause = prefixLike ? ' AND entries.rel_path LIKE ?' : '';
+  let typeClause = '';
+  let orderBy = 'ORDER BY entries.is_dir DESC, entries.name COLLATE NOCASE, entries.root_id, entries.rel_path';
+  if (type === 'photos') {
+    typeClause =
+      " AND entries.is_dir = 0 AND (entries.mime LIKE 'image/%' OR entries.mime LIKE 'video/%')";
+    orderBy = 'ORDER BY entries.mtime DESC, entries.name COLLATE NOCASE, entries.root_id, entries.rel_path';
+  } else if (type === 'music') {
+    typeClause = " AND entries.is_dir = 0 AND entries.mime LIKE 'audio/%'";
+    orderBy = 'ORDER BY entries.mtime DESC, entries.name COLLATE NOCASE, entries.root_id, entries.rel_path';
+  }
+  const baseWhere = `entries_fts MATCH ? AND ${rootClause}${typeClause}${prefixClause}`;
+  const baseParams = [ftsQuery, ...rootIds];
+  if (prefixLike) {
+    baseParams.push(prefixLike);
+  }
+  let total = 0;
+  if (includeTotal !== false) {
+    const countSql = `SELECT COUNT(*) as count ${join} WHERE ${baseWhere}`;
+    total = db.prepare(countSql).get(...baseParams)?.count || 0;
+  } else {
+    total = null;
+  }
+  let where = baseWhere;
+  const dataParams = [...baseParams];
+  if (type === 'photos' || type === 'music') {
+    ({ where, params: dataParams } = applyMtimeCursor({
+      where,
+      params: dataParams,
+      cursor,
+      prefix: 'entries',
+    }));
+  } else {
+    ({ where, params: dataParams } = applyNameCursor({
+      where,
+      params: dataParams,
+      cursor,
+      prefix: 'entries',
+    }));
+  }
+  const dataSql = `
+    ${select}
+    ${join}
+    WHERE ${where}
+    ${orderBy}
+    LIMIT ?
+  `;
+  const rows = db.prepare(dataSql).all(...dataParams, limit);
+  return { rows, total };
+}
+
+function searchAll({
+  db,
+  entrySelect,
+  rootIds,
+  type,
+  like,
+  prefixLike,
+  limit,
+  offset,
+  includeTotal,
+}) {
+  if (!rootIds.length) {
+    return { rows: [], total: includeTotal === false ? null : 0 };
   }
   const placeholders = rootIds.map(() => '?').join(', ');
   const rootClause = `root_id IN (${placeholders})`;
@@ -47,8 +330,13 @@ function searchAll({ db, entrySelect, rootIds, type, like, prefixLike, limit, of
   if (prefixLike) {
     params.push(prefixLike);
   }
-  const countSql = `SELECT COUNT(*) as count FROM entries WHERE ${where}`;
-  const total = db.prepare(countSql).get(...params)?.count || 0;
+  let total = 0;
+  if (includeTotal !== false) {
+    const countSql = `SELECT COUNT(*) as count FROM entries WHERE ${where}`;
+    total = db.prepare(countSql).get(...params)?.count || 0;
+  } else {
+    total = null;
+  }
   const orderBy =
     type === 'photos' || type === 'music'
       ? 'ORDER BY mtime DESC, name COLLATE NOCASE'
@@ -60,6 +348,73 @@ function searchAll({ db, entrySelect, rootIds, type, like, prefixLike, limit, of
     LIMIT ? OFFSET ?
   `;
   const rows = db.prepare(dataSql).all(...params, limit, offset);
+  return { rows, total };
+}
+
+function searchAllCursor({
+  db,
+  entrySelect,
+  rootIds,
+  type,
+  like,
+  prefixLike,
+  limit,
+  cursor,
+  includeTotal,
+}) {
+  if (!rootIds.length) {
+    return { rows: [], total: includeTotal === false ? null : 0 };
+  }
+  const placeholders = rootIds.map(() => '?').join(', ');
+  const rootClause = `root_id IN (${placeholders})`;
+  const prefixClause = prefixLike ? ' AND rel_path LIKE ?' : '';
+  let baseWhere = '';
+  let baseParams = [];
+  let orderBy = 'ORDER BY is_dir DESC, name COLLATE NOCASE, root_id, rel_path';
+  if (type === 'photos') {
+    baseWhere = `${rootClause} AND name LIKE ? AND (mime LIKE 'image/%' OR mime LIKE 'video/%')${prefixClause}`;
+    baseParams = [...rootIds, like];
+    orderBy = 'ORDER BY mtime DESC, name COLLATE NOCASE, root_id, rel_path';
+  } else if (type === 'music') {
+    baseWhere = `${rootClause} AND (name LIKE ? OR title LIKE ? OR artist LIKE ? OR album LIKE ?) AND mime LIKE 'audio/%'${prefixClause}`;
+    baseParams = [...rootIds, like, like, like, like];
+    orderBy = 'ORDER BY mtime DESC, name COLLATE NOCASE, root_id, rel_path';
+  } else {
+    baseWhere = `${rootClause} AND name LIKE ?${prefixClause}`;
+    baseParams = [...rootIds, like];
+  }
+  if (prefixLike) {
+    baseParams.push(prefixLike);
+  }
+  let total = 0;
+  if (includeTotal !== false) {
+    const countSql = `SELECT COUNT(*) as count FROM entries WHERE ${baseWhere}`;
+    total = db.prepare(countSql).get(...baseParams)?.count || 0;
+  } else {
+    total = null;
+  }
+  let where = baseWhere;
+  const dataParams = [...baseParams];
+  if (type === 'photos' || type === 'music') {
+    ({ where, params: dataParams } = applyMtimeCursor({
+      where,
+      params: dataParams,
+      cursor,
+    }));
+  } else {
+    ({ where, params: dataParams } = applyNameCursor({
+      where,
+      params: dataParams,
+      cursor,
+    }));
+  }
+  const dataSql = `
+    ${entrySelect}
+    WHERE ${where}
+    ${orderBy}
+    LIMIT ?
+  `;
+  const rows = db.prepare(dataSql).all(...dataParams, limit);
   return { rows, total };
 }
 
@@ -173,7 +528,13 @@ function listArtistTracksAll({ db, entrySelect, rootIds, artist, prefixLike }) {
 
 module.exports = {
   listMediaAll,
+  listChildrenCursor,
+  listMediaAllCursor,
   searchAll,
+  searchAllCursor,
+  searchFtsAll,
+  searchFtsAllCursor,
+  buildFtsQuery,
   listAlbumsAll,
   listArtistsAll,
   listAlbumTracksAll,

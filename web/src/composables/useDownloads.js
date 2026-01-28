@@ -19,7 +19,7 @@ function downloadBlob(blob, filename) {
 }
 
 export function useDownloads() {
-  const { apiFetch, downloadUrl } = useApi();
+  const { apiFetch, downloadUrl, apiUrls } = useApi();
 
   const downloadFile = ({ rootId, path, filename }) => {
     if (!rootId || !path) {
@@ -41,7 +41,7 @@ export function useDownloads() {
     if (!rootId || !Array.isArray(paths) || !paths.length) {
       return;
     }
-    const res = await apiFetch('/api/zip', {
+    const res = await apiFetch(apiUrls?.zip ? apiUrls.zip() : '/api/zip', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

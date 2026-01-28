@@ -5,7 +5,8 @@ const { sendError } = require('../lib/response');
 const { safeAttachmentName } = require('../lib/paths');
 
 function registerFileRoutes(fastify, ctx) {
-  const { config, db, previewCachePath, ensurePreview, safeJoin, normalizeRelPath } = ctx;
+  const { config, db, previewCachePath, ensurePreview, previewQueue, safeJoin, normalizeRelPath } =
+    ctx;
 
   fastify.get('/api/file', async (request, reply) => {
     const rootId = request.query.root;
@@ -83,21 +84,29 @@ function registerFileRoutes(fastify, ctx) {
     }
 
     const mimeType = entry.mime || mime.lookup(fullPath) || 'application/octet-stream';
-    if (!mimeType.startsWith('image/')) {
-      return sendError(reply, 415, 'unsupported_media', 'Preview only available for images');
+    const isImage = mimeType.startsWith('image/');
+    const isVideo = mimeType.startsWith('video/');
+    if (!isImage && !isVideo) {
+      return sendError(reply, 415, 'unsupported_media', 'Preview only available for images/videos');
     }
 
     const previewPath = previewCachePath(config.previewDir, rootId, relPath, entry.mtime);
     try {
-      const cachedPath = await ensurePreview({
-        fullPath,
-        previewPath,
-      });
+      const cachedPath = await previewQueue(previewPath, () =>
+        ensurePreview({
+          fullPath,
+          previewPath,
+          mimeType,
+        })
+      );
 
       if (!cachedPath) {
-        reply.header('X-Preview-Fallback', 'original');
-        reply.header('Content-Type', mimeType);
-        return reply.send(fs.createReadStream(fullPath));
+        if (isImage) {
+          reply.header('X-Preview-Fallback', 'original');
+          reply.header('Content-Type', mimeType);
+          return reply.send(fs.createReadStream(fullPath));
+        }
+        return sendError(reply, 415, 'unsupported_media', 'Preview not available for video');
       }
 
       reply.header('Content-Type', 'image/jpeg');

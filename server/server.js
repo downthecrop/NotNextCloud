@@ -4,13 +4,14 @@ const Fastify = require('fastify');
 const fastifyStatic = require('@fastify/static');
 
 const { loadConfig } = require('./config');
-const { initDb, ENTRY_SELECT } = require('./db');
+const { initDb, ENTRY_COLUMNS, ENTRY_SELECT } = require('./db');
 const { createIndexer } = require('./indexer');
 const { safeJoin, normalizeRelPath, normalizeParent } = require('./utils');
 const { previewCachePath, ensurePreview } = require('./preview');
 
 const { sendOk, sendError } = require('./lib/response');
 const { getRequestToken } = require('./lib/auth');
+const { createPreviewQueue } = require('./lib/previewQueue');
 const { purgeTrash } = require('./lib/trash');
 const { upsertUploadedFile } = require('./lib/uploads');
 
@@ -31,6 +32,7 @@ const ALL_ROOTS_ID = '__all__';
 const API_VERSION = 1;
 const UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024;
 const TRASH_RETENTION_MS = Math.max(0, config.trashRetentionDays || 0) * 24 * 60 * 60 * 1000;
+const SESSION_TTL_MS = Math.max(0, config.sessionTtlHours || 0) * 60 * 60 * 1000;
 
 const serverPackagePath = path.join(__dirname, 'package.json');
 const serverVersion = fs.existsSync(serverPackagePath)
@@ -82,7 +84,9 @@ ensureDir(config.trashDir);
 const db = initDb(config.dbPath);
 
 const fastify = Fastify({
-  logger: true,
+  logger: {
+    redact: ['req.headers.authorization'],
+  },
 });
 
 fastify.addContentTypeParser(
@@ -114,14 +118,39 @@ fastify.addHook('onRequest', async (request, reply) => {
     return;
   }
 
-  const token = getRequestToken(request);
-  if (!token || !sessions.has(token)) {
+  const token = getRequestToken(request, {
+    cookieName: config.sessionCookieName,
+    allowQueryToken: config.allowQueryToken,
+  });
+  if (!token) {
     return sendError(reply, 401, 'auth_required', 'Authentication required');
+  }
+  const session = sessions.get(token);
+  if (!session) {
+    return sendError(reply, 401, 'auth_required', 'Authentication required');
+  }
+  if (session.expiresAt && session.expiresAt <= Date.now()) {
+    sessions.delete(token);
+    return sendError(reply, 401, 'session_expired', 'Session expired');
   }
 });
 
 const indexer = createIndexer(config, db, fastify.log);
 indexer.start();
+
+const previewQueue = createPreviewQueue({ concurrency: config.previewConcurrency });
+
+if (SESSION_TTL_MS > 0) {
+  const cleanupIntervalMs = Math.min(SESSION_TTL_MS, 60 * 60 * 1000);
+  setInterval(() => {
+    const now = Date.now();
+    for (const [token, session] of sessions.entries()) {
+      if (session.expiresAt && session.expiresAt <= now) {
+        sessions.delete(token);
+      }
+    }
+  }, cleanupIntervalMs);
+}
 
 const ctx = {
   config,
@@ -136,8 +165,10 @@ const ctx = {
   normalizeParent,
   previewCachePath,
   ensurePreview,
+  previewQueue,
   clearPreviewCache,
   entrySelect: ENTRY_SELECT,
+  entryColumns: ENTRY_COLUMNS,
   allRootsId: ALL_ROOTS_ID,
   uploadChunkBytes: UPLOAD_CHUNK_BYTES,
   sessions,

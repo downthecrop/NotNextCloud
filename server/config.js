@@ -55,8 +55,12 @@ function loadConfig(projectRoot) {
     port: config.port || 4170,
     dbPath: resolvePath(projectRoot, config.dbPath || './data/files.db'),
     previewDir: resolvePath(projectRoot, config.previewDir || './data/previews'),
+    previewConcurrency: Number.isFinite(config.previewConcurrency)
+      ? Math.max(1, config.previewConcurrency)
+      : 2,
     scanIntervalSeconds: config.scanIntervalSeconds || 60,
     fastScan: Boolean(config.fastScan),
+    scanBatchSize: Number.isFinite(config.scanBatchSize) ? Math.max(1, config.scanBatchSize) : 500,
     fullScanIntervalHours: Number.isFinite(config.fullScanIntervalHours)
       ? config.fullScanIntervalHours
       : 0,
@@ -70,6 +74,9 @@ function loadConfig(projectRoot) {
     uploadOverwrite: Boolean(config.uploadOverwrite),
     trashDir: resolvePath(projectRoot, config.trashDir || './data/trash'),
     trashRetentionDays: Number.isFinite(config.trashRetentionDays) ? config.trashRetentionDays : 30,
+    sessionTtlHours: Number.isFinite(config.sessionTtlHours) ? config.sessionTtlHours : 24,
+    sessionCookieName: config.sessionCookieName || 'lc_token',
+    allowQueryToken: Boolean(config.allowQueryToken),
     hostFsRoot,
     roots: resolvedRoots,
     auth: {

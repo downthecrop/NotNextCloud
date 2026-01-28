@@ -82,6 +82,12 @@ const uploadMaxBytes = computed(() => uploadInfo.value?.maxBytes || 0);
 const uploadMaxFiles = computed(() => uploadInfo.value?.maxFiles || 0);
 const uploadChunkBytes = computed(() => uploadInfo.value?.chunkBytes || 0);
 const uploadResume = computed(() => uploadInfo.value?.resume === true);
+const progress = computed(() => props.status?.progress || null);
+const progressPercent = computed(() =>
+  Number.isFinite(progress.value?.percent) ? progress.value.percent : null
+);
+const countFormatter = new Intl.NumberFormat('en-US');
+const formatCount = (value) => (Number.isFinite(value) ? countFormatter.format(value) : '0');
 
 const hasEmptyPath = computed(() =>
   draftRoots.value.some((root) => !(root.path || '').trim())
@@ -208,6 +214,36 @@ watch(
                 <div>Last scan: {{ formatDate(status.lastScanAt) || 'Not yet' }}</div>
                 <div>Interval: {{ status.scanIntervalSeconds }}s</div>
                 <div>Status: {{ status.scanInProgress ? 'Running' : 'Idle' }}</div>
+                <div v-if="status.lastScanStats?.indexedTotal">
+                  Indexed items: {{ formatCount(status.lastScanStats.indexedTotal) }}
+                </div>
+                <div v-else-if="status.lastScanStats?.processedEntries">
+                  Last scan processed: {{ formatCount(status.lastScanStats.processedEntries) }}
+                </div>
+              </div>
+              <div v-if="status.scanInProgress && progress" class="settings-progress">
+                <div class="settings-progress-header">
+                  <span>Indexing...</span>
+                  <span v-if="progressPercent !== null">{{ progressPercent }}%</span>
+                </div>
+                <div class="settings-progress-bar">
+                  <div
+                    class="settings-progress-fill"
+                    :class="{ indeterminate: progressPercent === null }"
+                    :style="{ width: progressPercent !== null ? `${progressPercent}%` : '35%' }"
+                  ></div>
+                </div>
+                <div class="settings-progress-meta">
+                  <div>Indexed: {{ formatCount(progress.processedEntries) }} items</div>
+                  <div v-if="progress.expectedTotal">
+                    Estimated total: {{ formatCount(progress.expectedTotal) }}
+                  </div>
+                  <div v-if="progress.currentRootName">Drive: {{ progress.currentRootName }}</div>
+                  <div v-if="progress.currentPath" class="settings-progress-path">
+                    Path: {{ progress.currentPath }}
+                  </div>
+                  <div v-if="progress.mode">Mode: {{ progress.mode }}</div>
+                </div>
               </div>
             </div>
             <div class="settings-panel">

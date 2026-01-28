@@ -5,6 +5,7 @@ import SettingsModal from './components/SettingsModal.vue';
 import FilesView from './views/FilesView.vue';
 import PhotosView from './views/PhotosView.vue';
 import MusicView from './views/MusicView.vue';
+import { createApiClient } from './api/client';
 import { formatDate } from './utils/formatting';
 import { parseHash, buildHash } from './utils/hashNav';
 
@@ -47,83 +48,36 @@ function setToken(value) {
   }
 }
 
+const apiClient = createApiClient({
+  getToken: () => token.value,
+  onUnauthorized: () => setToken(''),
+  queryToken: false,
+});
+const apiFetch = apiClient.apiFetch;
+const apiJson = apiClient.apiJson;
+const apiUrls = apiClient.urls;
+
 function setUploadOverwrite(value) {
   uploadOverwrite.value = Boolean(value);
   localStorage.setItem('localCloudUploadOverwrite', uploadOverwrite.value ? 'true' : 'false');
 }
 
-async function apiFetch(url, options = {}) {
-  const headers = new Headers(options.headers || {});
-  if (token.value) {
-    headers.set('Authorization', `Bearer ${token.value}`);
-  }
-  const isBinaryBody =
-    options.body instanceof FormData ||
-    options.body instanceof Blob ||
-    options.body instanceof ArrayBuffer ||
-    ArrayBuffer.isView(options.body);
-  if (options.body && !headers.has('Content-Type') && !isBinaryBody) {
-    headers.set('Content-Type', 'application/json');
-  }
-  const response = await fetch(url, { ...options, headers });
-  if (response.status === 401) {
-    setToken('');
-  }
-  return response;
-}
-
-async function apiJson(url, options = {}) {
-  const res = await apiFetch(url, options);
-  let payload = null;
-  try {
-    payload = await res.json();
-  } catch {
-    payload = null;
-  }
-  if (payload && typeof payload === 'object' && 'ok' in payload) {
-    if (!payload.ok) {
-      return {
-        ok: false,
-        status: res.status,
-        error: payload.error || { message: 'Request failed' },
-      };
-    }
-    return {
-      ok: true,
-      status: res.status,
-      data: payload.data,
-      meta: payload.meta || null,
-    };
-  }
-  if (!res.ok) {
-    return {
-      ok: false,
-      status: res.status,
-      error: payload?.error || { message: 'Request failed' },
-    };
-  }
-  return { ok: true, status: res.status, data: payload, meta: null };
-}
-
+provide('apiClient', apiClient);
 provide('apiFetch', apiFetch);
 provide('apiJson', apiJson);
+provide('apiUrls', apiUrls);
 provide('authToken', token);
 
 async function login({ user, pass }) {
   try {
-    const res = await fetch('/api/login', {
+    const res = await apiJson(apiUrls.login(), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ user, pass }),
     });
     if (!res.ok) {
       return false;
     }
-    const payload = await res.json();
-    if (!payload?.ok) {
-      return false;
-    }
-    setToken(payload.data?.token);
+    setToken(res.data?.token);
     await loadRoots();
     return true;
   } catch {
@@ -132,12 +86,12 @@ async function login({ user, pass }) {
 }
 
 async function logout() {
-  await apiFetch('/api/logout', { method: 'POST' });
+  await apiFetch(apiUrls.logout(), { method: 'POST' });
   setToken('');
 }
 
 async function loadStatus() {
-  const result = await apiJson('/api/status');
+  const result = await apiJson(apiUrls.status());
   if (!result.ok) {
     return;
   }
@@ -145,7 +99,7 @@ async function loadStatus() {
 }
 
 async function loadInfo() {
-  const result = await apiJson('/api/info');
+  const result = await apiJson(apiUrls.info());
   if (!result.ok) {
     return;
   }
@@ -153,7 +107,7 @@ async function loadInfo() {
 }
 
 async function updateScanSettings(nextSettings) {
-  const result = await apiJson('/api/scan/settings', {
+  const result = await apiJson(apiUrls.scanSettings(), {
     method: 'PUT',
     body: JSON.stringify(nextSettings),
   });
@@ -168,20 +122,26 @@ async function loadRoots() {
   if (!token.value && !devMode.value) {
     return;
   }
-  const result = await apiJson('/api/roots');
+  const result = await apiJson(apiUrls.bootstrap());
   if (!result.ok) {
     return;
   }
-  roots.value = result.data;
-  if (!currentRoot.value && roots.value.length) {
+  const data = result.data || {};
+  roots.value = data.roots || [];
+  status.value = data.status || status.value;
+  apiInfo.value = data.info || apiInfo.value;
+  const preferredRoot = filesNav.value?.rootId
+    ? roots.value.find((root) => root.id === filesNav.value.rootId)
+    : null;
+  if (preferredRoot) {
+    currentRoot.value = preferredRoot;
+  } else if (!currentRoot.value && roots.value.length) {
     currentRoot.value = roots.value[0];
   }
-  await loadStatus();
-  await loadInfo();
 }
 
 async function updateRoots(nextRoots) {
-  const result = await apiJson('/api/roots', {
+  const result = await apiJson(apiUrls.roots(), {
     method: 'PUT',
     body: JSON.stringify({
       roots: nextRoots.map((root) => ({
@@ -223,6 +183,12 @@ function applyHash() {
       path: parsed.files?.path || '',
       token: Date.now(),
     };
+    if (filesNav.value.rootId) {
+      const match = roots.value.find((root) => root.id === filesNav.value.rootId);
+      if (match) {
+        currentRoot.value = match;
+      }
+    }
   }
 }
 
@@ -238,6 +204,15 @@ function setView(view) {
   setHash(view, musicNav.value);
 }
 
+function goFilesRoot() {
+  filesNav.value = {
+    rootId: currentRoot.value?.id || filesNav.value.rootId || null,
+    path: '',
+    token: Date.now(),
+  };
+  setView('files');
+}
+
 function openInFiles({ rootId, path }) {
   const root = roots.value.find((item) => item.id === rootId);
   if (root) {
@@ -249,6 +224,17 @@ function openInFiles({ rootId, path }) {
     token: Date.now(),
   };
   setView('files');
+}
+
+function navigateFiles({ rootId, path }) {
+  const nextHash = buildHash({
+    view: 'files',
+    music: musicNav.value,
+    files: { rootId: rootId || null, path: path || '' },
+  });
+  if (window.location.hash !== nextHash) {
+    window.location.hash = nextHash;
+  }
 }
 
 function openInMusic({ rootId, path, albumKey }) {
@@ -286,14 +272,14 @@ function updateMusicNav(next) {
 }
 
 async function rescan(scope) {
-  const result = await apiJson(`/api/scan?scope=${encodeURIComponent(scope)}`, { method: 'POST' });
+  const result = await apiJson(apiUrls.scan({ scope }), { method: 'POST' });
   if (result.ok) {
     status.value = result.data?.status || status.value;
   }
 }
 
 async function rebuildThumbs() {
-  await apiJson('/api/previews/rebuild', { method: 'POST' });
+  await apiJson(apiUrls.previewsRebuild(), { method: 'POST' });
 }
 
 watch(token, (value) => {
@@ -312,11 +298,10 @@ watch(currentView, (view) => {
 });
 
 onMounted(() => {
-  fetch('/api/health')
-    .then((res) => res.json())
-    .then((payload) => {
-      if (payload?.ok) {
-        devMode.value = Boolean(payload.data?.devMode);
+  apiJson(apiUrls.health())
+    .then((result) => {
+      if (result?.ok) {
+        devMode.value = Boolean(result.data?.devMode);
       } else {
         devMode.value = false;
       }
@@ -360,7 +345,7 @@ watch(
   <div v-else-if="isAuthenticated" class="app-shell">
     <header class="top-bar">
       <div class="brand-group">
-        <button class="brand" type="button" @click="setView('files')" aria-label="Go to Files">
+        <button class="brand" type="button" @click="goFilesRoot" aria-label="Go to Files">
           <span class="sr-only">Local Cloud</span>
           <i class="fa-solid fa-cloud"></i>
         </button>
@@ -394,6 +379,7 @@ watch(
       :upload-overwrite="uploadOverwrite"
       :upload-chunk-bytes="uploadChunkBytes"
       :on-select-root="selectRoot"
+      :on-navigate-path="navigateFiles"
       :on-open-in-music="openInMusic"
       :on-open-in-photos="openInPhotos"
     />

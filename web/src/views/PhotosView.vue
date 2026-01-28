@@ -4,6 +4,8 @@ import { useApi } from '../composables/useApi';
 import { useDownloads } from '../composables/useDownloads';
 import { useImageErrors } from '../composables/useImageErrors';
 import { useInfiniteScroll } from '../composables/useInfiniteScroll';
+import { useLibraryApi } from '../composables/useLibraryApi';
+import { useDebouncedWatch } from '../composables/useDebouncedWatch';
 import { useMenu, useGlobalMenuClose } from '../composables/useMenu';
 import { useMultiSelect } from '../composables/useMultiSelect';
 import { useSort } from '../composables/useSort';
@@ -11,6 +13,7 @@ import { useSidebar } from '../composables/useSidebar';
 import { formatDate, formatSize } from '../utils/formatting';
 import { itemKey as buildItemKey } from '../utils/itemKey';
 import { isImage, isVideo } from '../utils/media';
+import { loadPaged } from '../utils/pagination';
 
 const props = defineProps({
   roots: {
@@ -39,7 +42,8 @@ const props = defineProps({
   },
 });
 
-const { apiJson, fileUrl, previewUrl, downloadUrl } = useApi();
+const { fileUrl, previewUrl, downloadUrl } = useApi();
+const { listMedia, searchEntries } = useLibraryApi();
 const { downloadGrouped } = useDownloads();
 const { sortDir, setSort, sortList, compareText } = useSort({
   initialKey: 'date',
@@ -49,10 +53,12 @@ const { sortDir, setSort, sortList, compareText } = useSort({
 const items = ref([]);
 const total = ref(0);
 const offset = ref(0);
+const cursor = ref(null);
 const searchQuery = ref('');
 const searchResults = ref([]);
 const searchTotal = ref(0);
 const searchOffset = ref(0);
+const searchCursor = ref(null);
 const loading = ref(false);
 const error = ref('');
 const selectedItem = ref(null);
@@ -534,35 +540,26 @@ async function loadPhotos({ reset = true } = {}) {
   if (!props.currentRoot) {
     return;
   }
-  if (reset) {
-    offset.value = 0;
-    total.value = 0;
-    items.value = [];
-    clearSelection();
-  }
-  loading.value = true;
-  error.value = '';
-  try {
-    const pageOffset = reset ? 0 : offset.value;
-    const pathPrefix = activePinPath.value ? `&pathPrefix=${encodeURIComponent(activePinPath.value)}` : '';
-    const result = await apiJson(
-      `/api/media?root=${encodeURIComponent(props.currentRoot.id)}` +
-        `&type=photos&limit=${props.pageSize}&offset=${pageOffset}${pathPrefix}`
-    );
-    if (!result.ok) {
-      error.value = 'Failed to load photos';
-      return;
-    }
-    const data = result.data || {};
-    const newItems = data.items || [];
-    items.value = reset ? newItems : [...items.value, ...newItems];
-    total.value = data.total || 0;
-    offset.value = pageOffset + newItems.length;
-  } catch (err) {
-    error.value = 'Failed to load photos';
-  } finally {
-    loading.value = false;
-  }
+  await loadPaged({
+    reset,
+    items,
+    total,
+    offset,
+    cursor,
+    loading,
+    error,
+    errorMessage: 'Failed to load photos',
+    onReset: clearSelection,
+    fetchPage: ({ offset: pageOffset, cursor: pageCursor }) =>
+      listMedia({
+        rootId: props.currentRoot.id,
+        type: 'photos',
+        limit: props.pageSize,
+        offset: pageOffset,
+        cursor: pageCursor,
+        pathPrefix: activePinPath.value || undefined,
+      }),
+  });
 }
 
 async function runSearch({ reset = true } = {}) {
@@ -573,36 +570,28 @@ async function runSearch({ reset = true } = {}) {
   if (!query) {
     searchResults.value = [];
     searchOffset.value = 0;
+    searchCursor.value = null;
     searchTotal.value = 0;
     return;
   }
-  if (reset) {
-    searchResults.value = [];
-    searchOffset.value = 0;
-    searchTotal.value = 0;
-  }
-  loading.value = true;
-  try {
-    const pageOffset = reset ? 0 : searchOffset.value;
-    const pathPrefix = activePinPath.value ? `&pathPrefix=${encodeURIComponent(activePinPath.value)}` : '';
-    const result = await apiJson(
-      `/api/search?root=${encodeURIComponent(props.currentRoot.id)}` +
-        `&type=photos&q=${encodeURIComponent(query)}` +
-        `&limit=${props.pageSize}&offset=${pageOffset}${pathPrefix}`
-    );
-    if (!result.ok) {
-      return;
-    }
-    const data = result.data || {};
-    const newItems = data.items || [];
-    searchResults.value = reset ? newItems : [...searchResults.value, ...newItems];
-    searchTotal.value = data.total || 0;
-    searchOffset.value = pageOffset + newItems.length;
-  } catch (err) {
-    searchResults.value = [];
-  } finally {
-    loading.value = false;
-  }
+  await loadPaged({
+    reset,
+    items: searchResults,
+    total: searchTotal,
+    offset: searchOffset,
+    cursor: searchCursor,
+    loading,
+    fetchPage: ({ offset: pageOffset, cursor: pageCursor }) =>
+      searchEntries({
+        rootId: props.currentRoot.id,
+        type: 'photos',
+        query,
+        limit: props.pageSize,
+        offset: pageOffset,
+        cursor: pageCursor,
+        pathPrefix: activePinPath.value || undefined,
+      }),
+  });
 }
 
 async function loadMore() {
@@ -618,11 +607,7 @@ async function loadMore() {
 
 const { sentinel } = useInfiniteScroll(loadMore);
 
-let searchTimer = null;
-watch(searchQuery, () => {
-  clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => runSearch({ reset: true }), 250);
-});
+useDebouncedWatch(searchQuery, () => runSearch({ reset: true }));
 
 watch(activePin, () => {
   searchQuery.value = '';
@@ -812,23 +797,19 @@ watch(
               @contextmenu.prevent="openContextMenu($event, item)"
             >
               <img
-                v-if="isImage(item) && !hasImageError(item, 'tile')"
+                v-if="(isImage(item) || isVideo(item)) && !hasImageError(item, 'tile')"
                 :src="previewUrl(itemRootId(item), item.path)"
                 :alt="item.name"
                 loading="lazy"
                 @error="markImageError(item, 'tile')"
               />
-              <div v-else-if="isImage(item)" class="tile-fallback media-fallback compact">
+              <div
+                v-else-if="isImage(item) || isVideo(item)"
+                class="tile-fallback media-fallback compact"
+              >
                 <i class="fa-solid fa-file-circle-xmark"></i>
                 <span>{{ item.ext?.replace('.', '').toUpperCase() || 'FILE' }}</span>
               </div>
-              <video
-                v-else-if="isVideo(item)"
-                :src="fileUrl(itemRootId(item), item.path)"
-                muted
-                playsinline
-                preload="metadata"
-              ></video>
               <div v-else class="tile-fallback"><i class="fa-solid fa-file"></i></div>
               <span v-if="isVideo(item)" class="tile-badge" aria-hidden="true">
                 <i class="fa-solid fa-video"></i>
@@ -874,23 +855,19 @@ watch(
             @contextmenu.prevent="openContextMenu($event, item)"
           >
             <img
-              v-if="isImage(item) && !hasImageError(item, 'album')"
+              v-if="(isImage(item) || isVideo(item)) && !hasImageError(item, 'album')"
               :src="previewUrl(itemRootId(item), item.path)"
               :alt="item.name"
               loading="lazy"
               @error="markImageError(item, 'album')"
             />
-            <div v-else-if="isImage(item)" class="tile-fallback media-fallback compact">
+            <div
+              v-else-if="isImage(item) || isVideo(item)"
+              class="tile-fallback media-fallback compact"
+            >
               <i class="fa-solid fa-file-circle-xmark"></i>
               <span>{{ item.ext?.replace('.', '').toUpperCase() || 'FILE' }}</span>
             </div>
-            <video
-              v-else-if="isVideo(item)"
-              :src="fileUrl(itemRootId(item), item.path)"
-              muted
-              playsinline
-              preload="metadata"
-            ></video>
             <div v-else class="tile-fallback"><i class="fa-solid fa-file"></i></div>
             <span v-if="isVideo(item)" class="tile-badge" aria-hidden="true">
               <i class="fa-solid fa-video"></i>

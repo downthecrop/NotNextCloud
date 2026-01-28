@@ -1,6 +1,6 @@
 # Local Cloud API
 
-This API powers the web UI and is intended to be reused by desktop/mobile clients. Paths are stable under `/api` (no versioned prefix). Versioning is provided via headers and the `/api/info` response.
+This API powers the web UI and is intended to be reused by desktop/mobile clients. Paths are stable under `/api` (no versioned prefix). Versioning is provided via headers and the `/api/info` response. A starter OpenAPI document lives in `docs/openapi.json`.
 
 ## Conventions
 
@@ -9,7 +9,8 @@ This API powers the web UI and is intended to be reused by desktop/mobile client
 
 ### Auth
 - Bearer token in `Authorization: Bearer <token>`
-- Token can also be passed as `?token=` for file streaming URLs
+- Session cookie `lc_token` (HttpOnly) is set on login for browser-based media requests
+- Query string tokens are disabled by default; enable with `allowQueryToken` in `config.json` if needed
 - If `devMode` is true, auth is bypassed
 
 ### Response Envelope (JSON endpoints)
@@ -44,9 +45,13 @@ Endpoints returning lists include:
   "items": [ ... ],
   "total": 123,
   "limit": 50,
-  "offset": 0
+  "offset": 0,
+  "nextCursor": "..."
 }
 ```
+
+You can use cursor pagination by sending `cursor` instead of `offset`. When `cursor` is present, the server returns `nextCursor` for the next page.
+To skip expensive COUNT queries on large datasets, pass `includeTotal=false` (the `total` field will be `null`).
 
 ### Versioning
 - `X-Api-Version` and `X-Server-Version` headers are returned on `/api/*` requests
@@ -55,6 +60,8 @@ Endpoints returning lists include:
 ### Common Query Params
 - `root` = root id or `__all__` for multi-root queries (supported on search/media/trash)
 - `limit`, `offset` for pagination
+- `cursor` for keyset pagination (omit `offset` when using)
+- `includeTotal` = `false` to skip total counts (returns `total: null`)
 - `pathPrefix` for filtering a subtree
 
 ---
@@ -75,6 +82,21 @@ Server capabilities and limits.
 **Response**
 ```
 { "ok": true, "data": { "apiVersion": 1, "serverVersion": "0.1.0", "capabilities": { ... } } }
+```
+
+### `GET /api/bootstrap`
+Fetches info + roots + status in one request (useful for mobile/desktop clients).
+
+**Response**
+```
+{
+  "ok": true,
+  "data": {
+    "info": { "apiVersion": 1, "serverVersion": "0.1.0", "capabilities": { ... } },
+    "roots": [{ "id": "root", "name": "Drive", "path": "/mnt/drive", "absPath": "/mnt/drive" }],
+    "status": { "lastScanAt": 0, "scanInProgress": false, "scanIntervalSeconds": 60 }
+  }
+}
 ```
 
 ---
@@ -112,7 +134,7 @@ List children of a directory.
 Query:
 - `root` (required)
 - `path` (relative, default "")
-- `limit`, `offset`
+- `limit`, `offset`, `cursor`, `includeTotal`
 
 ### `GET /api/search`
 Search by name (and audio metadata for music).
@@ -122,7 +144,7 @@ Query:
 - `q` (required)
 - `type` = `all | photos | music`
 - `pathPrefix` (optional)
-- `limit`, `offset`
+- `limit`, `offset`, `cursor`, `includeTotal`
 
 ### `GET /api/file`
 Stream or download a file.
@@ -153,10 +175,10 @@ Query:
 - `root` (`__all__` supported)
 - `type` = `photos | music`
 - `pathPrefix` (optional)
-- `limit`, `offset`
+- `limit`, `offset`, `cursor`, `includeTotal`
 
 ### `GET /api/preview`
-Image preview (JPEG thumbnail).
+Image/video preview (JPEG thumbnail). Video previews require ffmpeg in the server container.
 
 Query:
 - `root`, `path`

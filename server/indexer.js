@@ -1,7 +1,6 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { fdir } = require('fdir');
 const mime = require('mime-types');
 
 const { normalizeParent, normalizeRelPath } = require('./utils');
@@ -45,6 +44,63 @@ async function ensureDir(targetPath) {
 
 function toStatNumber(value) {
   return Number.isFinite(value) ? value : null;
+}
+
+function updateProgress(progress, relPath, isDir) {
+  if (!progress) {
+    return;
+  }
+  progress.processedEntries += 1;
+  if (isDir) {
+    progress.processedDirs += 1;
+  } else {
+    progress.processedFiles += 1;
+  }
+  if (typeof relPath === 'string') {
+    progress.currentPath = relPath;
+  }
+}
+
+function createBatchWriter(db, logger, batchSize) {
+  const safeBatchSize = Number.isFinite(batchSize) ? Math.max(1, batchSize) : 1;
+  if (safeBatchSize <= 1) {
+    return {
+      enqueue: (fn) => fn(),
+      flush: () => {},
+    };
+  }
+  let pending = [];
+  const tx = db.db.transaction((ops) => {
+    for (const op of ops) {
+      op();
+    }
+  });
+  const flush = () => {
+    if (!pending.length) {
+      return;
+    }
+    const ops = pending;
+    pending = [];
+    try {
+      tx(ops);
+    } catch (error) {
+      logger?.error?.({ err: error }, 'Batch write failed');
+      for (const op of ops) {
+        try {
+          op();
+        } catch (err) {
+          logger?.error?.({ err }, 'Fallback write failed');
+        }
+      }
+    }
+  };
+  const enqueue = (fn) => {
+    pending.push(fn);
+    if (pending.length >= safeBatchSize) {
+      flush();
+    }
+  };
+  return { enqueue, flush };
 }
 
 async function hashFile(fullPath, algorithm) {
@@ -120,18 +176,6 @@ function updateFolderArtMap(folderArt, parentRel, fileName, fullPath) {
   }
 }
 
-function buildFolderArtMap(entries) {
-  const folderArt = new Map();
-  for (const entry of entries) {
-    if (entry.isDir) {
-      continue;
-    }
-    const parentRel = normalizeParent(entry.relPath);
-    updateFolderArtMap(folderArt, parentRel, entry.name, entry.fullPath);
-  }
-  return folderArt;
-}
-
 async function buildFolderArtMapForDir(rootPath, relPath, logger) {
   const folderArt = new Map();
   const targetPath = relPath ? path.join(rootPath, relPath) : rootPath;
@@ -151,57 +195,6 @@ async function buildFolderArtMapForDir(rootPath, relPath, logger) {
   return folderArt;
 }
 
-function isUnderSkipPrefix(relPath, skipPrefixes) {
-  if (!relPath) {
-    return false;
-  }
-  let current = relPath;
-  while (current) {
-    if (skipPrefixes.has(current)) {
-      return true;
-    }
-    current = normalizeParent(current);
-  }
-  return false;
-}
-
-async function collectEntries(rootPath, targetPath, logger) {
-  let fullPaths;
-  try {
-    fullPaths = await new fdir().withFullPaths().withDirs().crawl(targetPath).withPromise();
-  } catch (error) {
-    const relPath = normalizeRelPath(path.relative(rootPath, targetPath));
-    logger?.warn?.({ err: error, relPath }, 'Failed to read directory');
-    return [];
-  }
-
-  const entries = [];
-  for (const fullPath of fullPaths) {
-    let stats;
-    try {
-      stats = await fs.promises.lstat(fullPath);
-    } catch (error) {
-      logger?.warn?.({ err: error, fullPath }, 'Failed to stat entry');
-      continue;
-    }
-    if (stats.isSymbolicLink()) {
-      continue;
-    }
-    const relPath = normalizeRelPath(path.relative(rootPath, fullPath));
-    if (!relPath) {
-      continue;
-    }
-    entries.push({
-      fullPath,
-      relPath,
-      name: path.basename(fullPath),
-      stats,
-      isDir: stats.isDirectory(),
-    });
-  }
-  return entries;
-}
-
 async function processEntry({
   rootId,
   relPath,
@@ -216,6 +209,7 @@ async function processEntry({
   scanOptions,
   existing,
   sameStat,
+  writer,
 }) {
   const options = scanOptions || {};
   const hashAlgorithm = options.hashAlgorithm || 'sha256';
@@ -341,9 +335,13 @@ async function processEntry({
   }
 
   if (isSameStat && !needsHash && (!isDir || existingEntry)) {
-    db.touchEntry.run(scanId, rootId, relPath);
+    if (writer) {
+      writer.enqueue(() => db.touchEntry.run(scanId, rootId, relPath));
+    } else {
+      db.touchEntry.run(scanId, rootId, relPath);
+    }
   } else {
-    db.upsertEntry.run({
+    const payload = {
       root_id: rootId,
       rel_path: relPath,
       parent,
@@ -363,89 +361,134 @@ async function processEntry({
       hash_alg: hashAlg,
       inode: entryInode,
       device: entryDevice,
-    });
+    };
+    if (writer) {
+      writer.enqueue(() => db.upsertEntry.run(payload));
+    } else {
+      db.upsertEntry.run(payload);
+    }
   }
 }
 
-async function scanDirectory(rootId, rootPath, relPath, scanId, db, logger, albumArtDir, scanOptions) {
+async function scanDirectory(
+  rootId,
+  rootPath,
+  relPath,
+  scanId,
+  db,
+  logger,
+  albumArtDir,
+  scanOptions,
+  progress
+) {
   const options = scanOptions || {};
   const fastScan = Boolean(options.fastScan);
-  const targetPath = relPath ? path.join(rootPath, relPath) : rootPath;
-  const entries = await collectEntries(rootPath, targetPath, logger);
-  const folderArtMap = buildFolderArtMap(entries);
-  const skipPrefixes = new Set();
-  const dirEntries = entries.filter((entry) => entry.isDir);
-  const fileEntries = entries.filter((entry) => !entry.isDir);
+  const batchSize = Number.isFinite(options.batchSize) ? options.batchSize : 1;
+  const writer = createBatchWriter(db, logger, batchSize);
+  const stack = [relPath || ''];
 
-  dirEntries.sort((a, b) => {
-    const depthA = a.relPath.split(/[\\/]/).length;
-    const depthB = b.relPath.split(/[\\/]/).length;
-    if (depthA !== depthB) {
-      return depthA - depthB;
-    }
-    return a.relPath.localeCompare(b.relPath);
-  });
-
-  for (const entry of dirEntries) {
-    if (fastScan && isUnderSkipPrefix(entry.relPath, skipPrefixes)) {
-      continue;
-    }
-    const entryMtime = Math.floor(entry.stats.mtimeMs);
-    const entryInode = toStatNumber(entry.stats.ino);
-    const entryDevice = toStatNumber(entry.stats.dev);
-    const existing = db.getEntry.get(rootId, entry.relPath);
-    const sameStat =
-      existing &&
-      existing.size === 0 &&
-      existing.mtime === entryMtime &&
-      existing.is_dir === 1 &&
-      (existing.inode ?? null) === entryInode &&
-      (existing.device ?? null) === entryDevice;
-
-    if (fastScan && sameStat) {
-      db.touchPrefix.run(scanId, rootId, entry.relPath, `${entry.relPath}/%`);
-      skipPrefixes.add(entry.relPath);
+  while (stack.length) {
+    const currentRel = stack.pop();
+    const targetPath = currentRel ? path.join(rootPath, currentRel) : rootPath;
+    let dirents;
+    try {
+      dirents = await fs.promises.readdir(targetPath, { withFileTypes: true });
+    } catch (error) {
+      const rel = normalizeRelPath(path.relative(rootPath, targetPath));
+      logger?.warn?.({ err: error, relPath: rel }, 'Failed to read directory');
       continue;
     }
 
-    await processEntry({
-      rootId,
-      relPath: entry.relPath,
-      name: entry.name,
-      fullPath: entry.fullPath,
-      stats: entry.stats,
-      scanId,
-      db,
-      logger,
-      albumArtDir,
-      folderArtMap,
-      scanOptions,
-      existing,
-      sameStat,
-    });
+    const folderArtMap = new Map();
+    for (const dirent of dirents) {
+      if (!dirent.isFile()) {
+        continue;
+      }
+      updateFolderArtMap(
+        folderArtMap,
+        currentRel,
+        dirent.name,
+        path.join(targetPath, dirent.name)
+      );
+    }
+
+    for (const dirent of dirents) {
+      if (dirent.isSymbolicLink()) {
+        continue;
+      }
+      const fullPath = path.join(targetPath, dirent.name);
+      let stats;
+      try {
+        stats = await fs.promises.lstat(fullPath);
+      } catch (error) {
+        logger?.warn?.({ err: error, fullPath }, 'Failed to stat entry');
+        continue;
+      }
+      if (stats.isSymbolicLink()) {
+        continue;
+      }
+      const nextRel = currentRel ? `${currentRel}/${dirent.name}` : dirent.name;
+      updateProgress(progress, nextRel, stats.isDirectory());
+      if (stats.isDirectory()) {
+        const entryMtime = Math.floor(stats.mtimeMs);
+        const entryInode = toStatNumber(stats.ino);
+        const entryDevice = toStatNumber(stats.dev);
+        const existing = db.getEntry.get(rootId, nextRel);
+        const sameStat =
+          existing &&
+          existing.size === 0 &&
+          existing.mtime === entryMtime &&
+          existing.is_dir === 1 &&
+          (existing.inode ?? null) === entryInode &&
+          (existing.device ?? null) === entryDevice;
+
+        if (fastScan && sameStat) {
+          db.touchPrefix.run(scanId, rootId, nextRel, `${nextRel}/%`);
+          continue;
+        }
+
+        await processEntry({
+          rootId,
+          relPath: nextRel,
+          name: dirent.name,
+          fullPath,
+          stats,
+          scanId,
+          db,
+          logger,
+          albumArtDir,
+          folderArtMap,
+          scanOptions,
+          existing,
+          sameStat,
+          writer,
+        });
+
+        stack.push(nextRel);
+        continue;
+      }
+
+      await processEntry({
+        rootId,
+        relPath: nextRel,
+        name: dirent.name,
+        fullPath,
+        stats,
+        scanId,
+        db,
+        logger,
+        albumArtDir,
+        folderArtMap,
+        scanOptions,
+        writer,
+      });
+    }
   }
 
-  for (const entry of fileEntries) {
-    if (fastScan && isUnderSkipPrefix(entry.relPath, skipPrefixes)) {
-      continue;
-    }
-    await processEntry({
-      rootId,
-      relPath: entry.relPath,
-      name: entry.name,
-      fullPath: entry.fullPath,
-      stats: entry.stats,
-      scanId,
-      db,
-      logger,
-      albumArtDir,
-      folderArtMap,
-      scanOptions,
-    });
-  }
+  writer.flush();
 }
 
-async function scanRoot(root, scanId, db, logger, previewDir, scanOptions) {
+async function scanRoot(root, scanId, db, logger, previewDir, scanOptions, progress) {
   if (!root.absPath) {
     logger?.warn?.({ root }, 'Root path missing');
     return;
@@ -487,10 +530,21 @@ async function scanRoot(root, scanId, db, logger, previewDir, scanOptions) {
     inode: toStatNumber(rootStats.ino),
     device: toStatNumber(rootStats.dev),
   });
+  updateProgress(progress, '', rootStats.isDirectory());
 
   if (rootStats.isDirectory()) {
     const albumArtDir = previewDir ? path.join(previewDir, 'album-art') : null;
-    await scanDirectory(root.id, root.absPath, '', scanId, db, logger, albumArtDir, scanOptions);
+    await scanDirectory(
+      root.id,
+      root.absPath,
+      '',
+      scanId,
+      db,
+      logger,
+      albumArtDir,
+      scanOptions,
+      progress
+    );
   }
 
   db.cleanupOld.run(root.id, scanId);
@@ -502,6 +556,28 @@ function createIndexer(config, db, logger) {
   let lastScanAt = null;
   let scanTimer = null;
   let fullScanTimer = null;
+  let progress = null;
+  let lastScanStats = null;
+  const countEntriesByRoot = db.db.prepare('SELECT COUNT(*) as count FROM entries WHERE root_id = ?');
+
+  const estimateTotalForRoots = (roots) =>
+    roots.reduce((sum, root) => sum + (countEntriesByRoot.get(root.id)?.count || 0), 0);
+
+  const buildProgress = ({ mode, scope, expectedTotal, totalRoots }) => ({
+    scanId,
+    startedAt: Date.now(),
+    mode,
+    scope,
+    expectedTotal: Number.isFinite(expectedTotal) ? expectedTotal : null,
+    processedEntries: 0,
+    processedFiles: 0,
+    processedDirs: 0,
+    currentRootId: null,
+    currentRootName: null,
+    currentPath: '',
+    totalRoots: totalRoots || 0,
+    currentRootIndex: 0,
+  });
 
   const scanAll = async ({ forceHash = false, fastScan = false } = {}) => {
     if (scanInProgress) {
@@ -509,18 +585,50 @@ function createIndexer(config, db, logger) {
     }
     scanInProgress = true;
     scanId += 1;
+    const mode = forceHash ? 'rehash' : fastScan ? 'fast' : 'full';
+    progress = buildProgress({
+      mode,
+      scope: 'all',
+      expectedTotal: estimateTotalForRoots(config.roots),
+      totalRoots: config.roots.length,
+    });
     const scanOptions = {
       hashAlgorithm: config.hashAlgorithm || 'sha256',
       hashFiles: config.hashFiles !== false,
       forceHash,
       fastScan,
+      batchSize: Number.isFinite(config.scanBatchSize) ? Math.max(1, config.scanBatchSize) : 1,
     };
 
+    let index = 0;
     for (const root of config.roots) {
-      await scanRoot(root, scanId, db, logger, config.previewDir, scanOptions);
+      index += 1;
+      if (progress) {
+        progress.currentRootId = root.id;
+        progress.currentRootName = root.name;
+        progress.currentRootIndex = index;
+        progress.currentPath = '';
+      }
+      await scanRoot(root, scanId, db, logger, config.previewDir, scanOptions, progress);
     }
 
     lastScanAt = Date.now();
+    if (progress) {
+      const indexedTotal = estimateTotalForRoots(config.roots);
+      lastScanStats = {
+        scanId: progress.scanId,
+        finishedAt: lastScanAt,
+        durationMs: lastScanAt - progress.startedAt,
+        mode: progress.mode,
+        scope: progress.scope,
+        processedEntries: progress.processedEntries,
+        processedFiles: progress.processedFiles,
+        processedDirs: progress.processedDirs,
+        expectedTotal: progress.expectedTotal,
+        indexedTotal,
+      };
+    }
+    progress = null;
     scanInProgress = false;
   };
 
@@ -533,11 +641,18 @@ function createIndexer(config, db, logger) {
     }
     scanInProgress = true;
     scanId += 1;
+    const mode = forceHash ? 'rehash' : fastScan ? 'fast' : 'full';
+    progress = buildProgress({ mode, scope: 'path', expectedTotal: null, totalRoots: 1 });
+    progress.currentRootId = root.id;
+    progress.currentRootName = root.name;
+    progress.currentRootIndex = 1;
+    progress.currentPath = relPath || '';
     const scanOptions = {
       hashAlgorithm: config.hashAlgorithm || 'sha256',
       hashFiles: config.hashFiles !== false,
       forceHash,
       fastScan,
+      batchSize: Number.isFinite(config.scanBatchSize) ? Math.max(1, config.scanBatchSize) : 1,
     };
     const normalized = relPath || '';
     const targetPath = path.join(root.absPath, normalized);
@@ -556,6 +671,7 @@ function createIndexer(config, db, logger) {
       const parentRel = normalizeParent(normalized);
       folderArtMap = await buildFolderArtMapForDir(root.absPath, parentRel, logger);
     }
+    const writer = createBatchWriter(db, logger, scanOptions.batchSize);
     await processEntry({
       rootId: root.id,
       relPath: normalized,
@@ -568,7 +684,10 @@ function createIndexer(config, db, logger) {
       albumArtDir,
       folderArtMap,
       scanOptions,
+      writer,
     });
+    updateProgress(progress, normalized, stats.isDirectory());
+    writer.flush();
     if (stats.isDirectory()) {
       await scanDirectory(
         root.id,
@@ -578,7 +697,8 @@ function createIndexer(config, db, logger) {
         db,
         logger,
         albumArtDir,
-        scanOptions
+        scanOptions,
+        progress
       );
       const prefixLike = normalized ? `${normalized}/%` : '%';
       if (normalized) {
@@ -588,6 +708,21 @@ function createIndexer(config, db, logger) {
       }
     }
     lastScanAt = Date.now();
+    if (progress) {
+      lastScanStats = {
+        scanId: progress.scanId,
+        finishedAt: lastScanAt,
+        durationMs: lastScanAt - progress.startedAt,
+        mode: progress.mode,
+        scope: progress.scope,
+        processedEntries: progress.processedEntries,
+        processedFiles: progress.processedFiles,
+        processedDirs: progress.processedDirs,
+        expectedTotal: progress.expectedTotal,
+        indexedTotal: null,
+      };
+    }
+    progress = null;
     scanInProgress = false;
   };
 
@@ -635,6 +770,19 @@ function createIndexer(config, db, logger) {
       scanIntervalSeconds: config.scanIntervalSeconds || 60,
       fastScan: Boolean(config.fastScan),
       fullScanIntervalHours: Number(config.fullScanIntervalHours || 0),
+      progress: progress
+        ? {
+            ...progress,
+            percent:
+              progress.expectedTotal && progress.mode !== 'fast'
+                ? Math.min(
+                    100,
+                    Math.floor((progress.processedEntries / progress.expectedTotal) * 100)
+                  )
+                : null,
+          }
+        : null,
+      lastScanStats,
     }),
   };
 }

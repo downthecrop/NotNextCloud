@@ -1,21 +1,13 @@
 const { sendOk } = require('../lib/response');
+const { formatRootsResponse } = require('../lib/roots');
 
 function registerInfoRoutes(fastify, ctx) {
-  const { config, serverVersion, apiVersion, uploadChunkBytes } = ctx;
+  const { config, serverVersion, apiVersion, uploadChunkBytes, indexer } = ctx;
 
-  fastify.get('/api/health', async () => {
-    return sendOk({
-      status: 'ok',
-      devMode: config.devMode,
-      apiVersion,
-      serverVersion,
-    });
-  });
-
-  fastify.get('/api/info', async () => {
+  const buildInfo = () => {
     const maxBytes = config.uploadMaxBytes > 0 ? config.uploadMaxBytes : null;
     const maxFiles = config.uploadMaxFiles > 0 ? config.uploadMaxFiles : null;
-    return sendOk({
+    return {
       apiVersion,
       serverVersion,
       devMode: config.devMode,
@@ -23,6 +15,9 @@ function registerInfoRoutes(fastify, ctx) {
       auth: {
         required: !config.devMode,
         mode: 'bearer',
+        cookieName: config.sessionCookieName || 'lc_token',
+        sessionTtlHours: config.sessionTtlHours || 0,
+        queryToken: Boolean(config.allowQueryToken),
       },
       capabilities: {
         roots: true,
@@ -47,6 +42,27 @@ function registerInfoRoutes(fastify, ctx) {
           retentionDays: config.trashRetentionDays || 0,
         },
       },
+    };
+  };
+
+  fastify.get('/api/health', async () => {
+    return sendOk({
+      status: 'ok',
+      devMode: config.devMode,
+      apiVersion,
+      serverVersion,
+    });
+  });
+
+  fastify.get('/api/info', async () => {
+    return sendOk(buildInfo());
+  });
+
+  fastify.get('/api/bootstrap', async () => {
+    return sendOk({
+      info: buildInfo(),
+      roots: formatRootsResponse(config.roots),
+      status: indexer?.getStatus ? indexer.getStatus() : null,
     });
   });
 }

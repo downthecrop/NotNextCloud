@@ -226,6 +226,11 @@ input::placeholder {
   cursor: pointer;
   font-weight: 600;
   box-shadow: var(--glow);
+  text-decoration: none;
+  text-align: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .action-btn.secondary {
@@ -613,6 +618,15 @@ input::placeholder {
   color: var(--muted);
 }
 
+.list-thumb {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-xs);
+  object-fit: cover;
+  flex-shrink: 0;
+  background: #111a2b;
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
@@ -647,12 +661,29 @@ input::placeholder {
   place-items: center;
   overflow: hidden;
   margin-bottom: 8px;
+  position: relative;
 }
 
 .grid-thumb img {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+.grid-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: rgba(7, 12, 24, 0.7);
+  border: 1px solid rgba(90, 211, 255, 0.25);
+  display: grid;
+  place-items: center;
+  color: #f2f4f8;
+  font-size: 10px;
+  z-index: 2;
 }
 
 .preview {
@@ -692,6 +723,12 @@ input::placeholder {
   border-radius: 10px;
 }
 
+.preview .meta {
+  display: grid;
+  gap: 4px;
+  overflow-wrap: anywhere;
+}
+
 .photos-browser {
   padding: 18px 20px;
 }
@@ -715,8 +752,9 @@ input::placeholder {
 
 .timeline-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(140px, 140px));
   gap: 10px;
+  justify-content: start;
 }
 
 .tile {
@@ -1540,6 +1578,52 @@ input::placeholder {
   color: var(--muted);
 }
 
+.settings-progress {
+  display: grid;
+  gap: 8px;
+  padding-top: 6px;
+}
+
+.settings-progress-header {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.settings-progress-bar {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  height: 10px;
+  overflow: hidden;
+}
+
+.settings-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, rgba(90, 211, 255, 0.65), rgba(76, 141, 255, 0.95));
+  border-radius: var(--radius-pill);
+  transition: width 0.2s ease;
+}
+
+.settings-progress-fill.indeterminate {
+  animation: progressShift 1.4s ease infinite;
+  width: 35%;
+}
+
+.settings-progress-meta {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.settings-progress-path {
+  word-break: break-word;
+}
+
 .settings-toggle {
   display: flex;
   align-items: center;
@@ -1670,6 +1754,18 @@ input::placeholder {
   padding: 10px 12px;
   border-radius: var(--radius-xs);
   color: var(--ink);
+}
+
+@keyframes progressShift {
+  0% {
+    transform: translateX(-10%);
+  }
+  50% {
+    transform: translateX(40%);
+  }
+  100% {
+    transform: translateX(110%);
+  }
 }
 
 .login-error {

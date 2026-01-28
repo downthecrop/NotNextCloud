@@ -4,13 +4,17 @@ import { useApi } from '../composables/useApi';
 import { useDownloads } from '../composables/useDownloads';
 import { useImageErrors } from '../composables/useImageErrors';
 import { useInfiniteScroll } from '../composables/useInfiniteScroll';
+import { useLibraryApi } from '../composables/useLibraryApi';
 import { useMenu, useGlobalMenuClose } from '../composables/useMenu';
 import { useMultiSelect } from '../composables/useMultiSelect';
 import { useSidebar } from '../composables/useSidebar';
+import { useTrashApi } from '../composables/useTrashApi';
+import { useDebouncedWatch } from '../composables/useDebouncedWatch';
 import MiniPlayer from '../components/MiniPlayer.vue';
 import { formatDate, formatSize } from '../utils/formatting';
 import { itemKey as buildItemKey } from '../utils/itemKey';
 import { isAudio, isImage, isMedia, isVideo } from '../utils/media';
+import { loadPaged } from '../utils/pagination';
 
 const props = defineProps({
   roots: {
@@ -23,6 +27,10 @@ const props = defineProps({
   },
   navState: {
     type: Object,
+    default: null,
+  },
+  onNavigatePath: {
+    type: Function,
     default: null,
   },
   pageSize: {
@@ -55,18 +63,23 @@ const props = defineProps({
   },
 });
 
-const { apiJson, fileUrl, previewUrl, downloadUrl, trashFileUrl } = useApi();
+const { apiJson, apiUrls, fileUrl, previewUrl, downloadUrl, trashFileUrl } = useApi();
+const { listDirectory, searchEntries } = useLibraryApi();
+const { listTrash, deletePaths, restoreTrash, deleteTrash, clearTrash: clearTrashApi } =
+  useTrashApi();
 const { downloadFile, downloadZipPaths } = useDownloads();
 
 const currentPath = ref('');
 const items = ref([]);
 const listTotal = ref(0);
 const listOffset = ref(0);
+const listCursor = ref(null);
 const searchQuery = ref('');
 const searchAllRoots = ref(false);
 const searchResults = ref([]);
 const searchTotal = ref(0);
 const searchOffset = ref(0);
+const searchCursor = ref(null);
 const viewMode = ref('list');
 const loading = ref(false);
 const error = ref('');
@@ -192,7 +205,7 @@ async function scheduleScan(mode, pathValue) {
   if (!props.currentRoot) {
     return;
   }
-  await apiJson('/api/scan', {
+  await apiJson(apiUrls.scan(), {
     method: 'POST',
     body: JSON.stringify({
       root: props.currentRoot.id,
@@ -285,10 +298,7 @@ async function moveItemsToTrash(targetItems) {
     if (!paths.length) {
       continue;
     }
-    await apiJson('/api/delete', {
-      method: 'POST',
-      body: JSON.stringify({ root: targetRootId, paths }),
-    });
+    await deletePaths({ rootId: targetRootId, paths });
   }
 }
 
@@ -313,10 +323,7 @@ async function restoreSelection() {
   if (!ids.length) {
     return;
   }
-  await apiJson('/api/trash/restore', {
-    method: 'POST',
-    body: JSON.stringify({ ids }),
-  });
+  await restoreTrash(ids);
   clearSelection();
   await loadTrash({ reset: true });
   needsFilesRefresh.value = true;
@@ -334,21 +341,18 @@ async function deleteTrashSelection() {
   if (!ids.length) {
     return;
   }
-  await apiJson('/api/trash/delete', {
-    method: 'POST',
-    body: JSON.stringify({ ids }),
-  });
+  await deleteTrash(ids);
   clearSelection();
   await loadTrash({ reset: true });
   needsFilesRefresh.value = true;
   closeItemMenu();
 }
 
-async function clearTrash() {
+async function confirmClearTrash() {
   if (!confirm('Permanently delete all items in Recycle Bin?')) {
     return;
   }
-  await apiJson('/api/trash/clear', { method: 'POST', body: JSON.stringify({ root: '__all__' }) });
+  await clearTrashApi('__all__');
   clearSelection();
   await loadTrash({ reset: true });
   needsFilesRefresh.value = true;
@@ -392,6 +396,7 @@ function handleRootSelect(root) {
   const wasTrash = isTrashView.value;
   isTrashView.value = false;
   props.onSelectRoot(root);
+  props.onNavigatePath?.({ rootId: root?.id || null, path: '' });
   if (wasTrash) {
     loadList({ reset: true });
     needsFilesRefresh.value = false;
@@ -507,11 +512,13 @@ async function uploadFiles(files) {
       }
       const getStatus = async (overwriteFlag) => {
         const result = await apiJson(
-          `/api/upload/status?root=${encodeURIComponent(props.currentRoot.id)}` +
-            `&path=${encodeURIComponent(currentPath.value)}` +
-            `&file=${encodeURIComponent(name)}` +
-            `&size=${file.size}` +
-            `&overwrite=${overwriteFlag ? '1' : '0'}`
+          apiUrls.uploadStatus({
+            root: props.currentRoot.id,
+            path: currentPath.value,
+            file: name,
+            size: file.size,
+            overwrite: overwriteFlag ? 1 : 0,
+          })
         );
         if (!result.ok) {
           if (result.error?.code === 'exists') {
@@ -556,12 +563,14 @@ async function uploadFiles(files) {
           uploadProgress.value = { file: name, percent };
           uploadMessage.value = `Uploading ${name} (${percent}%)`;
           const chunkResult = await apiJson(
-            `/api/upload/chunk?root=${encodeURIComponent(props.currentRoot.id)}` +
-              `&path=${encodeURIComponent(currentPath.value)}` +
-              `&file=${encodeURIComponent(name)}` +
-              `&size=${file.size}` +
-              `&offset=${offset}` +
-              `&overwrite=${overwriteFlag ? '1' : '0'}`,
+            apiUrls.uploadChunk({
+              root: props.currentRoot.id,
+              path: currentPath.value,
+              file: name,
+              size: file.size,
+              offset,
+              overwrite: overwriteFlag ? 1 : 0,
+            }),
             {
               method: 'POST',
               headers: { 'Content-Type': 'application/octet-stream' },
@@ -635,66 +644,43 @@ async function loadList({ reset = true } = {}) {
   if (isTrashView.value) {
     return;
   }
-  if (reset) {
-    listOffset.value = 0;
-    listTotal.value = 0;
-    items.value = [];
-    clearSelection();
-  }
-  loading.value = true;
-  error.value = '';
-  try {
-    const offset = reset ? 0 : listOffset.value;
-    const result = await apiJson(
-      `/api/list?root=${encodeURIComponent(props.currentRoot.id)}` +
-        `&path=${encodeURIComponent(currentPath.value)}` +
-        `&limit=${props.pageSize}&offset=${offset}`
-    );
-    if (!result.ok) {
-      error.value = 'Failed to load directory';
-      return;
-    }
-    const data = result.data || {};
-    const newItems = data.items || [];
-    items.value = reset ? newItems : [...items.value, ...newItems];
-    listTotal.value = data.total || 0;
-    listOffset.value = offset + newItems.length;
-  } catch (err) {
-    error.value = 'Failed to load directory';
-  } finally {
-    loading.value = false;
-  }
+  await loadPaged({
+    reset,
+    items,
+    total: listTotal,
+    offset: listOffset,
+    cursor: listCursor,
+    loading,
+    error,
+    errorMessage: 'Failed to load directory',
+    onReset: clearSelection,
+    fetchPage: ({ offset: pageOffset, cursor: pageCursor }) =>
+      listDirectory({
+        rootId: props.currentRoot.id,
+        path: currentPath.value,
+        limit: props.pageSize,
+        offset: pageOffset,
+        cursor: pageCursor,
+      }),
+  });
 }
 
 async function loadTrash({ reset = true } = {}) {
   if (!isTrashView.value) {
     return;
   }
-  if (reset) {
-    trashOffset.value = 0;
-    trashTotal.value = 0;
-    trashItems.value = [];
-    clearSelection();
-  }
-  loading.value = true;
-  error.value = '';
-  try {
-    const offset = reset ? 0 : trashOffset.value;
-    const result = await apiJson(`/api/trash?root=__all__&limit=${props.pageSize}&offset=${offset}`);
-    if (!result.ok) {
-      error.value = 'Failed to load trash';
-      return;
-    }
-    const data = result.data || {};
-    const newItems = data.items || [];
-    trashItems.value = reset ? newItems : [...trashItems.value, ...newItems];
-    trashTotal.value = data.total || 0;
-    trashOffset.value = offset + newItems.length;
-  } catch {
-    error.value = 'Failed to load trash';
-  } finally {
-    loading.value = false;
-  }
+  await loadPaged({
+    reset,
+    items: trashItems,
+    total: trashTotal,
+    offset: trashOffset,
+    loading,
+    error,
+    errorMessage: 'Failed to load trash',
+    onReset: clearSelection,
+    fetchPage: ({ offset: pageOffset }) =>
+      listTrash({ rootId: '__all__', limit: props.pageSize, offset: pageOffset }),
+  });
 }
 
 async function runSearch({ reset = true } = {}) {
@@ -709,36 +695,27 @@ async function runSearch({ reset = true } = {}) {
   if (!query) {
     searchResults.value = [];
     searchOffset.value = 0;
+    searchCursor.value = null;
     searchTotal.value = 0;
     return;
   }
-  if (reset) {
-    searchResults.value = [];
-    searchOffset.value = 0;
-    searchTotal.value = 0;
-    clearSelection();
-  }
-  loading.value = true;
-  try {
-    const offset = reset ? 0 : searchOffset.value;
-    const result = await apiJson(
-      `/api/search?root=${encodeURIComponent(targetRootId)}` +
-        `&q=${encodeURIComponent(query)}` +
-        `&limit=${props.pageSize}&offset=${offset}`
-    );
-    if (!result.ok) {
-      return;
-    }
-    const data = result.data || {};
-    const newItems = data.items || [];
-    searchResults.value = reset ? newItems : [...searchResults.value, ...newItems];
-    searchTotal.value = data.total || 0;
-    searchOffset.value = offset + newItems.length;
-  } catch (err) {
-    searchResults.value = [];
-  } finally {
-    loading.value = false;
-  }
+  await loadPaged({
+    reset,
+    items: searchResults,
+    total: searchTotal,
+    offset: searchOffset,
+    cursor: searchCursor,
+    loading,
+    onReset: clearSelection,
+    fetchPage: ({ offset: pageOffset, cursor: pageCursor }) =>
+      searchEntries({
+        rootId: targetRootId,
+        query,
+        limit: props.pageSize,
+        offset: pageOffset,
+        cursor: pageCursor,
+      }),
+  });
 }
 
 async function openItem(item) {
@@ -757,6 +734,7 @@ async function openItem(item) {
     currentPath.value = item.path;
     searchQuery.value = '';
     await loadList({ reset: true });
+    props.onNavigatePath?.({ rootId: itemRootId(item) || rootId.value, path: item.path });
     return;
   }
 }
@@ -862,6 +840,7 @@ function goToCrumb(crumb) {
   currentPath.value = crumb.path;
   searchQuery.value = '';
   loadList({ reset: true });
+  props.onNavigatePath?.({ rootId: rootId.value, path: crumb.path });
 }
 
 async function downloadZip() {
@@ -913,13 +892,11 @@ async function loadMore() {
 
 const { sentinel } = useInfiniteScroll(loadMore);
 
-let searchTimer = null;
-watch(searchQuery, () => {
+useDebouncedWatch(searchQuery, () => {
   if (isTrashView.value) {
     return;
   }
-  clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => runSearch({ reset: true }), 250);
+  runSearch({ reset: true });
 });
 
 watch(searchAllRoots, () => {
@@ -951,6 +928,12 @@ watch(
     pendingOpen.value = null;
     if (pending?.path && pending?.rootId === props.currentRoot?.id) {
       currentPath.value = pending.path;
+      props.onNavigatePath?.({ rootId: pending.rootId, path: pending.path });
+    } else if (
+      props.navState?.rootId === props.currentRoot?.id &&
+      typeof props.navState?.path === 'string'
+    ) {
+      currentPath.value = props.navState.path;
     }
     loadList({ reset: true });
   },
@@ -1166,7 +1149,7 @@ function handleKey(event) {
           >
             Delete Permanently ({{ selectionCount }})
           </button>
-          <button v-if="isTrashView" class="action-btn" @click="clearTrash">
+          <button v-if="isTrashView" class="action-btn" @click="confirmClearTrash">
             Empty Trash
           </button>
           <div class="view-toggle">
@@ -1228,7 +1211,20 @@ function handleKey(event) {
           :style="{ animationDelay: `${index * 20}ms` }"
           >
             <div class="name-cell">
-              <span class="icon"><i :class="iconClass(item)"></i></span>
+              <img
+                v-if="isTrashView && isImage(item)"
+                class="list-thumb"
+                :src="trashFileUrl(item.trashId)"
+                :alt="item.name"
+              />
+              <img
+                v-else-if="(isImage(item) || isVideo(item)) && !hasImageError(item, 'list')"
+                class="list-thumb"
+                :src="previewUrl(itemRootId(item), item.path)"
+                :alt="item.name"
+                @error="markImageError(item, 'list')"
+              />
+              <span v-else class="icon"><i :class="iconClass(item)"></i></span>
               <div class="name-stack">
                 <strong>{{ item.name }}</strong>
                 <div v-if="isSearchMode || isTrashView" class="item-path">
@@ -1259,16 +1255,19 @@ function handleKey(event) {
               />
               <span v-else-if="isTrashView" class="icon"><i :class="iconClass(item)"></i></span>
               <img
-                v-else-if="isImage(item) && !hasImageError(item, 'thumb')"
+                v-else-if="(isImage(item) || isVideo(item)) && !hasImageError(item, 'thumb')"
                 :src="previewUrl(itemRootId(item), item.path)"
                 :alt="item.name"
                 @error="markImageError(item, 'thumb')"
               />
-              <div v-else-if="isImage(item)" class="media-fallback compact">
+              <div v-else-if="isImage(item) || isVideo(item)" class="media-fallback compact">
                 <i class="fa-solid fa-file-circle-xmark"></i>
                 <span>{{ item.ext?.replace('.', '').toUpperCase() || 'FILE' }}</span>
               </div>
               <span v-else class="icon"><i :class="iconClass(item)"></i></span>
+              <span v-if="isVideo(item)" class="grid-badge" aria-hidden="true">
+                <i class="fa-solid fa-video"></i>
+              </span>
             </div>
             <strong>{{ item.name }}</strong>
             <div v-if="isSearchMode || isTrashView" class="item-path">
@@ -1339,7 +1338,7 @@ function handleKey(event) {
         class="action-btn"
         :href="downloadUrl(itemRootId(activeItem), activeItem.path)"
       >
-        Download File
+        Download
       </a>
     </aside>
   </section>

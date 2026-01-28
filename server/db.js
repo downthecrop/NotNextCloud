@@ -113,7 +113,46 @@ function initDb(dbPath) {
     CREATE INDEX IF NOT EXISTS idx_entries_root_artist ON entries (root_id, artist);
     CREATE INDEX IF NOT EXISTS idx_entries_hash ON entries (content_hash);
     CREATE INDEX IF NOT EXISTS idx_entries_root_rel ON entries (root_id, rel_path);
+    CREATE INDEX IF NOT EXISTS idx_entries_root_mtime ON entries (root_id, mtime);
   `);
+
+  db.exec(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
+      name,
+      title,
+      artist,
+      album,
+      root_id UNINDEXED,
+      rel_path UNINDEXED,
+      mime UNINDEXED,
+      is_dir UNINDEXED,
+      content='entries',
+      content_rowid='id'
+    );
+    CREATE TRIGGER IF NOT EXISTS entries_ai AFTER INSERT ON entries BEGIN
+      INSERT INTO entries_fts(rowid, name, title, artist, album, root_id, rel_path, mime, is_dir)
+      VALUES (new.id, new.name, new.title, new.artist, new.album, new.root_id, new.rel_path, new.mime, new.is_dir);
+    END;
+    CREATE TRIGGER IF NOT EXISTS entries_ad AFTER DELETE ON entries BEGIN
+      INSERT INTO entries_fts(entries_fts, rowid, name, title, artist, album, root_id, rel_path, mime, is_dir)
+      VALUES ('delete', old.id, old.name, old.title, old.artist, old.album, old.root_id, old.rel_path, old.mime, old.is_dir);
+    END;
+    CREATE TRIGGER IF NOT EXISTS entries_au AFTER UPDATE ON entries BEGIN
+      INSERT INTO entries_fts(entries_fts, rowid, name, title, artist, album, root_id, rel_path, mime, is_dir)
+      VALUES ('delete', old.id, old.name, old.title, old.artist, old.album, old.root_id, old.rel_path, old.mime, old.is_dir);
+      INSERT INTO entries_fts(rowid, name, title, artist, album, root_id, rel_path, mime, is_dir)
+      VALUES (new.id, new.name, new.title, new.artist, new.album, new.root_id, new.rel_path, new.mime, new.is_dir);
+    END;
+  `);
+
+  const ftsCount = db.prepare('SELECT COUNT(*) as count FROM entries_fts').get()?.count || 0;
+  if (ftsCount === 0) {
+    db.exec(`
+      INSERT INTO entries_fts(rowid, name, title, artist, album, root_id, rel_path, mime, is_dir)
+      SELECT id, name, title, artist, album, root_id, rel_path, mime, is_dir FROM entries
+    `);
+  }
+  const ftsEnabled = true;
 
   const upsertEntry = db.prepare(`
     INSERT INTO entries (
@@ -504,6 +543,7 @@ function initDb(dbPath) {
 
   return {
     db,
+    ftsEnabled,
     upsertEntry,
     listChildren,
     countChildren,
@@ -558,6 +598,7 @@ function initDb(dbPath) {
 
 module.exports = {
   initDb,
+  ENTRY_COLUMNS,
   ENTRY_SELECT,
   ENTRY_DETAIL_SELECT,
 };

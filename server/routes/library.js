@@ -1,17 +1,91 @@
 const { sendOk, sendError, sendList } = require('../lib/response');
+const { encodeCursor, decodeCursor } = require('../lib/cursor');
 const { makePrefixLike } = require('../lib/paths');
 const { resolveRootScope } = require('../lib/roots');
 const {
   listMediaAll,
+  listChildrenCursor,
+  listMediaAllCursor,
   searchAll,
+  searchAllCursor,
+  searchFtsAll,
+  searchFtsAllCursor,
+  buildFtsQuery,
   listAlbumsAll,
   listArtistsAll,
   listAlbumTracksAll,
   listArtistTracksAll,
 } = require('../lib/queries');
 
+function parseIsDir(value) {
+  if (value === true || value === 1) {
+    return 1;
+  }
+  if (value === false || value === 0) {
+    return 0;
+  }
+  return null;
+}
+
+function parseListCursor(raw) {
+  const cursor = decodeCursor(raw);
+  if (!cursor || typeof cursor !== 'object') {
+    return null;
+  }
+  const isDir = parseIsDir(cursor.isDir);
+  if (isDir === null || typeof cursor.name !== 'string' || typeof cursor.path !== 'string') {
+    return null;
+  }
+  return { isDir, name: cursor.name, path: cursor.path };
+}
+
+function parseNameCursor(raw) {
+  const cursor = decodeCursor(raw);
+  if (!cursor || typeof cursor !== 'object') {
+    return null;
+  }
+  const isDir = parseIsDir(cursor.isDir);
+  if (
+    isDir === null ||
+    typeof cursor.name !== 'string' ||
+    typeof cursor.rootId !== 'string' ||
+    typeof cursor.path !== 'string'
+  ) {
+    return null;
+  }
+  return { isDir, name: cursor.name, rootId: cursor.rootId, path: cursor.path };
+}
+
+function parseMtimeCursor(raw) {
+  const cursor = decodeCursor(raw);
+  if (!cursor || typeof cursor !== 'object') {
+    return null;
+  }
+  const mtime = Number(cursor.mtime);
+  if (
+    !Number.isFinite(mtime) ||
+    typeof cursor.name !== 'string' ||
+    typeof cursor.rootId !== 'string' ||
+    typeof cursor.path !== 'string'
+  ) {
+    return null;
+  }
+  return { mtime, name: cursor.name, rootId: cursor.rootId, path: cursor.path };
+}
+
+function parseIncludeTotal(value) {
+  if (value === undefined || value === null || value === '') {
+    return true;
+  }
+  const normalized = String(value).toLowerCase();
+  if (normalized === 'false' || normalized === '0' || normalized === 'no') {
+    return false;
+  }
+  return true;
+}
+
 function registerLibraryRoutes(fastify, ctx) {
-  const { config, db, entrySelect, allRootsId } = ctx;
+  const { config, db, entrySelect, entryColumns, allRootsId } = ctx;
 
   fastify.get('/api/list', async (request, reply) => {
     const rootId = request.query.root;
@@ -23,8 +97,40 @@ function registerLibraryRoutes(fastify, ctx) {
     const relPath = ctx.normalizeRelPath(request.query.path || '');
     const limit = Math.min(parseInt(request.query.limit || '50', 10) || 50, 200);
     const offset = Math.max(parseInt(request.query.offset || '0', 10) || 0, 0);
-    const rows = db.listChildren.all(rootId, relPath, limit, offset);
-    const total = db.countChildren.get(rootId, relPath)?.count || 0;
+    const cursor = request.query.cursor ? parseListCursor(request.query.cursor) : null;
+    const includeTotal = parseIncludeTotal(request.query.includeTotal);
+    if (request.query.cursor && !cursor) {
+      return sendError(reply, 400, 'invalid_cursor', 'Invalid cursor');
+    }
+    let rows = [];
+    let total = includeTotal ? 0 : null;
+    let nextCursor = null;
+    if (cursor) {
+      rows = listChildrenCursor({
+        db: db.db,
+        entrySelect,
+        rootId,
+        parent: relPath,
+        limit,
+        cursor,
+      });
+      if (includeTotal) {
+        total = db.countChildren.get(rootId, relPath)?.count || 0;
+      }
+      if (rows.length === limit) {
+        const last = rows[rows.length - 1];
+        nextCursor = encodeCursor({
+          isDir: last.is_dir,
+          name: last.name,
+          path: last.rel_path,
+        });
+      }
+    } else {
+      rows = db.listChildren.all(rootId, relPath, limit, offset);
+      if (includeTotal) {
+        total = db.countChildren.get(rootId, relPath)?.count || 0;
+      }
+    }
     const items = rows.map((row) => ({
       rootId: row.root_id,
       path: row.rel_path,
@@ -40,7 +146,7 @@ function registerLibraryRoutes(fastify, ctx) {
       duration: row.duration || null,
       albumKey: row.album_key || null,
     }));
-    return sendList(items, total, limit, offset);
+    return sendList(items, total, limit, cursor ? 0 : offset, nextCursor);
   });
 
   fastify.get('/api/search', async (request, reply) => {
@@ -52,15 +158,87 @@ function registerLibraryRoutes(fastify, ctx) {
     const query = (request.query.q || '').trim();
     const limit = Math.min(parseInt(request.query.limit || '50', 10) || 50, 200);
     const offset = Math.max(parseInt(request.query.offset || '0', 10) || 0, 0);
-    if (!query) {
-      return sendList([], 0, limit, offset);
-    }
     const type = (request.query.type || 'all').toLowerCase();
+    const includeTotal = parseIncludeTotal(request.query.includeTotal);
+    if (!query) {
+      return sendList([], includeTotal ? 0 : null, limit, offset);
+    }
+    const cursorParser = type === 'photos' || type === 'music' ? parseMtimeCursor : parseNameCursor;
+    const cursor = request.query.cursor ? cursorParser(request.query.cursor) : null;
+    if (request.query.cursor && !cursor) {
+      return sendError(reply, 400, 'invalid_cursor', 'Invalid cursor');
+    }
     const like = `%${query}%`;
     const prefixLike = makePrefixLike(request.query.pathPrefix);
     let rows = [];
-    let total = 0;
-    if (scope.isAll) {
+    let total = includeTotal ? 0 : null;
+    const ftsFields = type === 'music' ? ['name', 'title', 'artist', 'album'] : ['name'];
+    const ftsQuery = db.ftsEnabled ? buildFtsQuery(query, ftsFields) : '';
+    const useFts = Boolean(ftsQuery);
+    let nextCursor = null;
+    if (cursor) {
+      if (useFts) {
+      const result = searchFtsAllCursor({
+        db: db.db,
+        entryColumns,
+        rootIds: scope.rootIds,
+        type,
+        ftsQuery,
+        prefixLike,
+        limit,
+        cursor,
+        includeTotal,
+      });
+      rows = result.rows;
+      total = result.total;
+    } else {
+      const result = searchAllCursor({
+        db: db.db,
+        entrySelect,
+        rootIds: scope.rootIds,
+        type,
+        like,
+        prefixLike,
+        limit,
+        cursor,
+        includeTotal,
+      });
+      rows = result.rows;
+      total = result.total;
+      }
+      if (rows.length === limit) {
+        const last = rows[rows.length - 1];
+        if (type === 'photos' || type === 'music') {
+          nextCursor = encodeCursor({
+            mtime: last.mtime,
+            name: last.name,
+            rootId: last.root_id,
+            path: last.rel_path,
+          });
+        } else {
+          nextCursor = encodeCursor({
+            isDir: last.is_dir,
+            name: last.name,
+            rootId: last.root_id,
+            path: last.rel_path,
+          });
+        }
+      }
+    } else if (useFts) {
+      const result = searchFtsAll({
+        db: db.db,
+        entryColumns,
+        rootIds: scope.rootIds,
+        type,
+        ftsQuery,
+        prefixLike,
+        limit,
+        offset,
+        includeTotal,
+      });
+      rows = result.rows;
+      total = result.total;
+    } else if (scope.isAll) {
       const results = searchAll({
         db: db.db,
         entrySelect,
@@ -70,29 +248,41 @@ function registerLibraryRoutes(fastify, ctx) {
         prefixLike,
         limit,
         offset,
+        includeTotal,
       });
       rows = results.rows;
       total = results.total;
     } else if (type === 'photos') {
       if (prefixLike) {
         rows = db.searchPhotosByPrefix.all(rootId, like, prefixLike, limit, offset);
-        total = db.countSearchPhotosByPrefix.get(rootId, like, prefixLike)?.count || 0;
+        if (includeTotal) {
+          total = db.countSearchPhotosByPrefix.get(rootId, like, prefixLike)?.count || 0;
+        }
       } else {
         rows = db.searchPhotos.all(rootId, like, limit, offset);
-        total = db.countSearchPhotos.get(rootId, like)?.count || 0;
+        if (includeTotal) {
+          total = db.countSearchPhotos.get(rootId, like)?.count || 0;
+        }
       }
     } else if (type === 'music') {
       if (prefixLike) {
         rows = db.searchMusicByPrefix.all(rootId, like, like, like, like, prefixLike, limit, offset);
-        total =
-          db.countSearchMusicByPrefix.get(rootId, like, like, like, like, prefixLike)?.count || 0;
+        if (includeTotal) {
+          total =
+            db.countSearchMusicByPrefix.get(rootId, like, like, like, like, prefixLike)?.count ||
+            0;
+        }
       } else {
         rows = db.searchMusic.all(rootId, like, like, like, like, limit, offset);
-        total = db.countSearchMusic.get(rootId, like, like, like, like)?.count || 0;
+        if (includeTotal) {
+          total = db.countSearchMusic.get(rootId, like, like, like, like)?.count || 0;
+        }
       }
     } else {
       rows = db.searchByName.all(rootId, like, limit, offset);
-      total = db.countSearch.get(rootId, like)?.count || 0;
+      if (includeTotal) {
+        total = db.countSearch.get(rootId, like)?.count || 0;
+      }
     }
     const items = rows.map((row) => ({
       rootId: row.root_id,
@@ -109,7 +299,7 @@ function registerLibraryRoutes(fastify, ctx) {
       duration: row.duration || null,
       albumKey: row.album_key || null,
     }));
-    return sendList(items, total, limit, offset);
+    return sendList(items, total, limit, cursor ? 0 : offset, nextCursor);
   });
 
   fastify.get('/api/media', async (request, reply) => {
@@ -123,14 +313,42 @@ function registerLibraryRoutes(fastify, ctx) {
     const limit = Math.min(parseInt(request.query.limit || '50', 10) || 50, 200);
     const offset = Math.max(parseInt(request.query.offset || '0', 10) || 0, 0);
     const prefixLike = makePrefixLike(request.query.pathPrefix);
+    const cursor = request.query.cursor ? parseMtimeCursor(request.query.cursor) : null;
+    const includeTotal = parseIncludeTotal(request.query.includeTotal);
+    if (request.query.cursor && !cursor) {
+      return sendError(reply, 400, 'invalid_cursor', 'Invalid cursor');
+    }
 
     if (type !== 'photos' && type !== 'music') {
       return sendError(reply, 400, 'invalid_media_type', 'Invalid media type');
     }
 
     let rows = [];
-    let total = 0;
-    if (scope.isAll) {
+    let total = includeTotal ? 0 : null;
+    let nextCursor = null;
+    if (cursor) {
+      const results = listMediaAllCursor({
+        db: db.db,
+        entrySelect,
+        rootIds: scope.rootIds,
+        type,
+        prefixLike,
+        limit,
+        cursor,
+        includeTotal,
+      });
+      rows = results.rows;
+      total = results.total;
+      if (rows.length === limit) {
+        const last = rows[rows.length - 1];
+        nextCursor = encodeCursor({
+          mtime: last.mtime,
+          name: last.name,
+          rootId: last.root_id,
+          path: last.rel_path,
+        });
+      }
+    } else if (scope.isAll) {
       const results = listMediaAll({
         db: db.db,
         entrySelect,
@@ -139,24 +357,33 @@ function registerLibraryRoutes(fastify, ctx) {
         prefixLike,
         limit,
         offset,
+        includeTotal,
       });
       rows = results.rows;
       total = results.total;
     } else if (type === 'photos') {
       if (prefixLike) {
         rows = db.listPhotosByPrefix.all(rootId, prefixLike, limit, offset);
-        total = db.countPhotosByPrefix.get(rootId, prefixLike)?.count || 0;
+        if (includeTotal) {
+          total = db.countPhotosByPrefix.get(rootId, prefixLike)?.count || 0;
+        }
       } else {
         rows = db.listPhotos.all(rootId, limit, offset);
-        total = db.countPhotos.get(rootId)?.count || 0;
+        if (includeTotal) {
+          total = db.countPhotos.get(rootId)?.count || 0;
+        }
       }
     } else if (type === 'music') {
       if (prefixLike) {
         rows = db.listMusicByPrefix.all(rootId, prefixLike, limit, offset);
-        total = db.countMusicByPrefix.get(rootId, prefixLike)?.count || 0;
+        if (includeTotal) {
+          total = db.countMusicByPrefix.get(rootId, prefixLike)?.count || 0;
+        }
       } else {
         rows = db.listMusic.all(rootId, limit, offset);
-        total = db.countMusic.get(rootId)?.count || 0;
+        if (includeTotal) {
+          total = db.countMusic.get(rootId)?.count || 0;
+        }
       }
     }
 
@@ -176,7 +403,7 @@ function registerLibraryRoutes(fastify, ctx) {
       albumKey: row.album_key || null,
     }));
 
-    return sendList(items, total, limit, offset);
+    return sendList(items, total, limit, cursor ? 0 : offset, nextCursor);
   });
 
   fastify.get('/api/music/albums', async (request, reply) => {

@@ -121,4 +121,4 @@
 - Should we include a lightweight reverse proxy or rely on direct binding.
 
 ### Workflow Note
-- After any code change, reboot Docker (`docker compose up -d --build`) before sending the final response.
+- After any code change, reboot Docker (`docker compose up -d --build`) before sending the final response. Do not send the final response until the Docker restart attempt has been made.
