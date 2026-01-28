@@ -20,6 +20,7 @@ const filesNav = ref({ rootId: null, path: '', token: 0 });
 const musicJump = ref({ rootId: null, path: '', token: 0 });
 const photosJump = ref({ rootId: null, path: '', token: 0 });
 const settingsOpen = ref(false);
+let statusTimer = null;
 const pageSize = ref(parseInt(localStorage.getItem('localCloudPageSize') || '50', 10) || 50);
 const apiInfo = ref(null);
 const uploadOverwrite = ref(localStorage.getItem('localCloudUploadOverwrite') === 'true');
@@ -290,6 +291,39 @@ watch(token, (value) => {
     apiInfo.value = null;
   }
 });
+
+function startStatusPolling() {
+  if (statusTimer) {
+    clearInterval(statusTimer);
+    statusTimer = null;
+  }
+  if (!isAuthenticated.value) {
+    return;
+  }
+  loadStatus();
+  statusTimer = setInterval(() => {
+    if (isAuthenticated.value) {
+      loadStatus();
+    }
+  }, 5000);
+}
+
+watch(
+  () => isAuthenticated.value,
+  () => {
+    startStatusPolling();
+  },
+  { immediate: true }
+);
+
+watch(
+  () => settingsOpen.value,
+  (value) => {
+    if (value && isAuthenticated.value) {
+      loadStatus();
+    }
+  }
+);
 
 watch(currentView, (view) => {
   if (view !== 'photos' && photosJump.value.path) {

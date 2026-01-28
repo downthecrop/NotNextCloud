@@ -3,15 +3,27 @@ import { useApi } from './useApi';
 export function useLibraryApi() {
   const { apiJson, apiUrls } = useApi();
 
-  const withPage = ({ limit = 50, offset = 0, cursor = null }) =>
-    cursor ? { limit, cursor } : { limit, offset };
+  const withPage = ({ limit = 50, offset = 0, cursor = null, includeTotal = true }) => {
+    const base = cursor ? { limit, cursor } : { limit, offset };
+    if (includeTotal === false) {
+      return { ...base, includeTotal: false };
+    }
+    return base;
+  };
 
-  const listDirectory = ({ rootId, path = '', limit = 50, offset = 0, cursor = null }) =>
+  const listDirectory = ({
+    rootId,
+    path = '',
+    limit = 50,
+    offset = 0,
+    cursor = null,
+    includeTotal = true,
+  }) =>
     apiJson(
       apiUrls.list({
         root: rootId,
         path,
-        ...withPage({ limit, offset, cursor }),
+        ...withPage({ limit, offset, cursor, includeTotal }),
       })
     );
 
@@ -23,6 +35,7 @@ export function useLibraryApi() {
     limit = 50,
     offset = 0,
     cursor = null,
+    includeTotal = true,
   }) =>
     apiJson(
       apiUrls.search({
@@ -30,17 +43,25 @@ export function useLibraryApi() {
         q: query,
         type,
         pathPrefix: pathPrefix || undefined,
-        ...withPage({ limit, offset, cursor }),
+        ...withPage({ limit, offset, cursor, includeTotal }),
       })
     );
 
-  const listMedia = ({ rootId, type, pathPrefix, limit = 50, offset = 0, cursor = null }) =>
+  const listMedia = ({
+    rootId,
+    type,
+    pathPrefix,
+    limit = 50,
+    offset = 0,
+    cursor = null,
+    includeTotal = true,
+  }) =>
     apiJson(
       apiUrls.media({
         root: rootId,
         type,
         pathPrefix: pathPrefix || undefined,
-        ...withPage({ limit, offset, cursor }),
+        ...withPage({ limit, offset, cursor, includeTotal }),
       })
     );
 

@@ -2,7 +2,7 @@ const { sendOk } = require('../lib/response');
 const { formatRootsResponse } = require('../lib/roots');
 
 function registerInfoRoutes(fastify, ctx) {
-  const { config, serverVersion, apiVersion, uploadChunkBytes, indexer } = ctx;
+  const { config, serverVersion, apiVersion, uploadChunkBytes, indexer, db } = ctx;
 
   const buildInfo = () => {
     const maxBytes = config.uploadMaxBytes > 0 ? config.uploadMaxBytes : null;
@@ -24,8 +24,23 @@ function registerInfoRoutes(fastify, ctx) {
         search: true,
         media: true,
         albums: true,
-        previews: true,
+        previews: {
+          enabled: true,
+          concurrency: config.previewConcurrency || 1,
+        },
         zip: true,
+        pagination: {
+          cursor: true,
+          includeTotal: true,
+          maxLimit: 200,
+        },
+        searchConfig: {
+          fts: Boolean(db?.ftsEnabled),
+        },
+        indexing: {
+          scanBatchSize: config.scanBatchSize || 0,
+          fastScan: Boolean(config.fastScan),
+        },
         upload: {
           enabled: config.uploadEnabled,
           maxBytes,

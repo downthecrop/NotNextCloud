@@ -2,6 +2,7 @@ const { sendOk, sendError, sendList } = require('../lib/response');
 const { encodeCursor, decodeCursor } = require('../lib/cursor');
 const { makePrefixLike } = require('../lib/paths');
 const { resolveRootScope } = require('../lib/roots');
+const { toEntryList } = require('../lib/entries');
 const {
   listMediaAll,
   listChildrenCursor,
@@ -131,21 +132,7 @@ function registerLibraryRoutes(fastify, ctx) {
         total = db.countChildren.get(rootId, relPath)?.count || 0;
       }
     }
-    const items = rows.map((row) => ({
-      rootId: row.root_id,
-      path: row.rel_path,
-      name: row.name,
-      size: row.size,
-      mtime: row.mtime,
-      mime: row.mime,
-      ext: row.ext,
-      isDir: Boolean(row.is_dir),
-      title: row.title || null,
-      artist: row.artist || null,
-      album: row.album || null,
-      duration: row.duration || null,
-      albumKey: row.album_key || null,
-    }));
+    const items = toEntryList(rows);
     return sendList(items, total, limit, cursor ? 0 : offset, nextCursor);
   });
 
@@ -284,21 +271,7 @@ function registerLibraryRoutes(fastify, ctx) {
         total = db.countSearch.get(rootId, like)?.count || 0;
       }
     }
-    const items = rows.map((row) => ({
-      rootId: row.root_id,
-      path: row.rel_path,
-      name: row.name,
-      size: row.size,
-      mtime: row.mtime,
-      mime: row.mime,
-      ext: row.ext,
-      isDir: Boolean(row.is_dir),
-      title: row.title || null,
-      artist: row.artist || null,
-      album: row.album || null,
-      duration: row.duration || null,
-      albumKey: row.album_key || null,
-    }));
+    const items = toEntryList(rows);
     return sendList(items, total, limit, cursor ? 0 : offset, nextCursor);
   });
 
@@ -387,21 +360,7 @@ function registerLibraryRoutes(fastify, ctx) {
       }
     }
 
-    const items = rows.map((row) => ({
-      rootId: row.root_id,
-      path: row.rel_path,
-      name: row.name,
-      size: row.size,
-      mtime: row.mtime,
-      mime: row.mime,
-      ext: row.ext,
-      isDir: Boolean(row.is_dir),
-      title: row.title || null,
-      artist: row.artist || null,
-      album: row.album || null,
-      duration: row.duration || null,
-      albumKey: row.album_key || null,
-    }));
+    const items = toEntryList(rows);
 
     return sendList(items, total, limit, cursor ? 0 : offset, nextCursor);
   });
@@ -494,22 +453,7 @@ function registerLibraryRoutes(fastify, ctx) {
       : prefixLike
       ? db.listAlbumTracksByPrefix.all(rootId, albumKey, prefixLike)
       : db.listAlbumTracks.all(rootId, albumKey);
-    const items = rows.map((row) => ({
-      rootId: row.root_id,
-      path: row.rel_path,
-      name: row.name,
-      size: row.size,
-      mtime: row.mtime,
-      mime: row.mime,
-      ext: row.ext,
-      isDir: Boolean(row.is_dir),
-      title: row.title || null,
-      artist: row.artist || null,
-      album: row.album || null,
-      duration: row.duration || null,
-      albumKey: row.album_key || null,
-    }));
-    return sendOk({ items });
+    return sendOk({ items: toEntryList(rows) });
   });
 
   fastify.get('/api/music/artist', async (request, reply) => {

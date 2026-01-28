@@ -179,6 +179,310 @@
           "limit",
           "offset"
         ]
+      },
+      "IndexProgress": {
+        "type": "object",
+        "properties": {
+          "scanId": {
+            "type": "integer"
+          },
+          "startedAt": {
+            "type": "integer"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "expectedTotal": {
+            "type": "integer",
+            "nullable": true
+          },
+          "processedEntries": {
+            "type": "integer"
+          },
+          "processedFiles": {
+            "type": "integer"
+          },
+          "processedDirs": {
+            "type": "integer"
+          },
+          "currentRootId": {
+            "type": "string",
+            "nullable": true
+          },
+          "currentRootName": {
+            "type": "string",
+            "nullable": true
+          },
+          "currentPath": {
+            "type": "string"
+          },
+          "totalRoots": {
+            "type": "integer"
+          },
+          "currentRootIndex": {
+            "type": "integer"
+          },
+          "percent": {
+            "type": "integer",
+            "nullable": true
+          }
+        }
+      },
+      "IndexStats": {
+        "type": "object",
+        "properties": {
+          "scanId": {
+            "type": "integer"
+          },
+          "finishedAt": {
+            "type": "integer"
+          },
+          "durationMs": {
+            "type": "integer"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "processedEntries": {
+            "type": "integer"
+          },
+          "processedFiles": {
+            "type": "integer"
+          },
+          "processedDirs": {
+            "type": "integer"
+          },
+          "expectedTotal": {
+            "type": "integer",
+            "nullable": true
+          },
+          "indexedTotal": {
+            "type": "integer",
+            "nullable": true
+          }
+        }
+      },
+      "Status": {
+        "type": "object",
+        "properties": {
+          "lastScanAt": {
+            "type": "integer",
+            "nullable": true
+          },
+          "scanInProgress": {
+            "type": "boolean"
+          },
+          "scanIntervalSeconds": {
+            "type": "integer"
+          },
+          "fastScan": {
+            "type": "boolean"
+          },
+          "fullScanIntervalHours": {
+            "type": "integer"
+          },
+          "progress": {
+            "$ref": "#/components/schemas/IndexProgress",
+            "nullable": true
+          },
+          "lastScanStats": {
+            "$ref": "#/components/schemas/IndexStats",
+            "nullable": true
+          }
+        },
+        "required": [
+          "scanInProgress",
+          "scanIntervalSeconds",
+          "fastScan",
+          "fullScanIntervalHours"
+        ]
+      },
+      "Info": {
+        "type": "object",
+        "properties": {
+          "apiVersion": {
+            "type": "integer"
+          },
+          "serverVersion": {
+            "type": "string"
+          },
+          "devMode": {
+            "type": "boolean"
+          },
+          "serverTime": {
+            "type": "string"
+          },
+          "auth": {
+            "type": "object"
+          },
+          "capabilities": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "apiVersion",
+          "serverVersion",
+          "devMode",
+          "serverTime",
+          "auth",
+          "capabilities"
+        ]
+      },
+      "Bootstrap": {
+        "type": "object",
+        "properties": {
+          "info": {
+            "$ref": "#/components/schemas/Info"
+          },
+          "roots": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Root"
+            }
+          },
+          "status": {
+            "$ref": "#/components/schemas/Status",
+            "nullable": true
+          }
+        },
+        "required": [
+          "info",
+          "roots"
+        ]
+      },
+      "Health": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "devMode": {
+            "type": "boolean"
+          },
+          "apiVersion": {
+            "type": "integer"
+          },
+          "serverVersion": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "devMode",
+          "apiVersion",
+          "serverVersion"
+        ]
+      },
+      "EnvelopeList": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "data": {
+            "$ref": "#/components/schemas/ListResponse"
+          },
+          "meta": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "ok",
+          "data"
+        ]
+      },
+      "EnvelopeInfo": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "data": {
+            "$ref": "#/components/schemas/Info"
+          },
+          "meta": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "ok",
+          "data"
+        ]
+      },
+      "EnvelopeStatus": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "data": {
+            "$ref": "#/components/schemas/Status"
+          },
+          "meta": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "ok",
+          "data"
+        ]
+      },
+      "EnvelopeBootstrap": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "data": {
+            "$ref": "#/components/schemas/Bootstrap"
+          },
+          "meta": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "ok",
+          "data"
+        ]
+      },
+      "EnvelopeHealth": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "data": {
+            "$ref": "#/components/schemas/Health"
+          },
+          "meta": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "ok",
+          "data"
+        ]
       }
     }
   },
@@ -197,7 +501,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/EnvelopeOk"
+                  "$ref": "#/components/schemas/EnvelopeHealth"
                 }
               }
             }
@@ -215,7 +519,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/EnvelopeOk"
+                  "$ref": "#/components/schemas/EnvelopeInfo"
                 }
               }
             }
@@ -232,7 +536,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/EnvelopeOk"
+                  "$ref": "#/components/schemas/EnvelopeBootstrap"
                 }
               }
             }
@@ -379,7 +683,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/EnvelopeOk"
+                  "$ref": "#/components/schemas/EnvelopeStatus"
                 }
               }
             }
@@ -508,7 +812,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/EnvelopeOk"
+                  "$ref": "#/components/schemas/EnvelopeList"
                 }
               }
             }
@@ -590,7 +894,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/EnvelopeOk"
+                  "$ref": "#/components/schemas/EnvelopeList"
                 }
               }
             }
@@ -664,7 +968,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/EnvelopeOk"
+                  "$ref": "#/components/schemas/EnvelopeList"
                 }
               }
             }

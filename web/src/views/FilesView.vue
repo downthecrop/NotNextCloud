@@ -14,7 +14,7 @@ import MiniPlayer from '../components/MiniPlayer.vue';
 import { formatDate, formatSize } from '../utils/formatting';
 import { itemKey as buildItemKey } from '../utils/itemKey';
 import { isAudio, isImage, isMedia, isVideo } from '../utils/media';
-import { loadPaged } from '../utils/pagination';
+import { hasMoreFromTotalOrCursor, loadPaged } from '../utils/pagination';
 
 const props = defineProps({
   roots: {
@@ -157,9 +157,17 @@ const hasMore = computed(() => {
     return trashItems.value.length < trashTotal.value;
   }
   if (isSearchMode.value) {
-    return searchResults.value.length < searchTotal.value;
+    return hasMoreFromTotalOrCursor({
+      itemsLength: searchResults.value.length,
+      total: searchTotal.value,
+      cursor: searchCursor.value,
+    });
   }
-  return items.value.length < listTotal.value;
+  return hasMoreFromTotalOrCursor({
+    itemsLength: items.value.length,
+    total: listTotal.value,
+    cursor: listCursor.value,
+  });
 });
 const audioQueue = computed(() =>
   isTrashView.value ? [] : displayItems.value.filter((item) => isAudio(item))
@@ -661,6 +669,7 @@ async function loadList({ reset = true } = {}) {
         limit: props.pageSize,
         offset: pageOffset,
         cursor: pageCursor,
+        includeTotal: false,
       }),
   });
 }
@@ -714,6 +723,7 @@ async function runSearch({ reset = true } = {}) {
         limit: props.pageSize,
         offset: pageOffset,
         cursor: pageCursor,
+        includeTotal: false,
       }),
   });
 }

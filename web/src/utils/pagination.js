@@ -40,7 +40,11 @@ export async function loadPaged({
     const data = result.data || {};
     const newItems = data.items || [];
     items.value = reset ? newItems : [...items.value, ...newItems];
-    total.value = data.total || 0;
+    if ('total' in data) {
+      total.value = data.total;
+    } else {
+      total.value = 0;
+    }
     if (offset) {
       offset.value = pageOffset + newItems.length;
     }
@@ -58,4 +62,11 @@ export async function loadPaged({
       loading.value = false;
     }
   }
+}
+
+export function hasMoreFromTotalOrCursor({ itemsLength, total, cursor }) {
+  if (total === null || total === undefined) {
+    return Boolean(cursor);
+  }
+  return itemsLength < total;
 }

@@ -12,7 +12,7 @@ import { useDebouncedWatch } from '../composables/useDebouncedWatch';
 import MiniPlayer from '../components/MiniPlayer.vue';
 import { formatDuration } from '../utils/formatting';
 import { itemKey as buildItemKey } from '../utils/itemKey';
-import { loadPaged } from '../utils/pagination';
+import { hasMoreFromTotalOrCursor, loadPaged } from '../utils/pagination';
 
 const props = defineProps({
   roots: {
@@ -162,7 +162,18 @@ const albumTrackCount = computed(() => {
 
 const hasMore = computed(() => {
   if (mode.value === 'songs') {
-    return displaySongs.value.length < (isSearchMode.value ? searchTotal.value : total.value);
+    if (isSearchMode.value) {
+      return hasMoreFromTotalOrCursor({
+        itemsLength: displaySongs.value.length,
+        total: searchTotal.value,
+        cursor: searchCursor.value,
+      });
+    }
+    return hasMoreFromTotalOrCursor({
+      itemsLength: displaySongs.value.length,
+      total: total.value,
+      cursor: cursor.value,
+    });
   }
   if (mode.value === 'albums') {
     if (selectedAlbum.value) {
@@ -329,6 +340,7 @@ async function loadTracks({ reset = true } = {}) {
         offset: pageOffset,
         cursor: pageCursor,
         pathPrefix: activePinPath.value || undefined,
+        includeTotal: false,
       }),
   });
 }
@@ -365,6 +377,7 @@ async function runSearch({ reset = true } = {}) {
         offset: pageOffset,
         cursor: pageCursor,
         pathPrefix: activePinPath.value || undefined,
+        includeTotal: false,
       }),
   });
 }

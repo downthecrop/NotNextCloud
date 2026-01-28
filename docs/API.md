@@ -57,6 +57,10 @@ To skip expensive COUNT queries on large datasets, pass `includeTotal=false` (th
 - `X-Api-Version` and `X-Server-Version` headers are returned on `/api/*` requests
 - `/api/info` includes `apiVersion` and `serverVersion`
 
+### OpenAPI + Types
+- OpenAPI spec: `docs/openapi.json`
+- Generate types: `node docs/generate-types.js` -> `docs/openapi.d.ts`
+
 ### Common Query Params
 - `root` = root id or `__all__` for multi-root queries (supported on search/media/trash)
 - `limit`, `offset` for pagination

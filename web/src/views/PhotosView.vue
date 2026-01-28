@@ -13,7 +13,7 @@ import { useSidebar } from '../composables/useSidebar';
 import { formatDate, formatSize } from '../utils/formatting';
 import { itemKey as buildItemKey } from '../utils/itemKey';
 import { isImage, isVideo } from '../utils/media';
-import { loadPaged } from '../utils/pagination';
+import { hasMoreFromTotalOrCursor, loadPaged } from '../utils/pagination';
 
 const props = defineProps({
   roots: {
@@ -103,9 +103,17 @@ const hasMore = computed(() => {
     return false;
   }
   if (isSearchMode.value) {
-    return searchResults.value.length < searchTotal.value;
+    return hasMoreFromTotalOrCursor({
+      itemsLength: searchResults.value.length,
+      total: searchTotal.value,
+      cursor: searchCursor.value,
+    });
   }
-  return items.value.length < total.value;
+  return hasMoreFromTotalOrCursor({
+    itemsLength: items.value.length,
+    total: total.value,
+    cursor: cursor.value,
+  });
 });
 
 const selectionItems = computed(() =>
@@ -558,6 +566,7 @@ async function loadPhotos({ reset = true } = {}) {
         offset: pageOffset,
         cursor: pageCursor,
         pathPrefix: activePinPath.value || undefined,
+        includeTotal: false,
       }),
   });
 }
@@ -590,6 +599,7 @@ async function runSearch({ reset = true } = {}) {
         offset: pageOffset,
         cursor: pageCursor,
         pathPrefix: activePinPath.value || undefined,
+        includeTotal: false,
       }),
   });
 }
