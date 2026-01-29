@@ -32,7 +32,15 @@ function registerInfoRoutes(fastify, ctx) {
         pagination: {
           cursor: true,
           includeTotal: true,
+          includeTotalDefault: false,
           maxLimit: 200,
+          listSortModes: ['name', 'none'],
+          listCursorModes: ['name', 'raw'],
+          listCursorFields: {
+            name: ['isDir', 'name', 'path'],
+            nameAll: ['isDir', 'name', 'rootId', 'path'],
+            raw: ['id', 'maxId'],
+          },
         },
         searchConfig: {
           fts: Boolean(db?.ftsEnabled),

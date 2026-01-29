@@ -2,6 +2,8 @@ const fs = require('fs');
 const path = require('path');
 const mime = require('mime-types');
 const { sendOk, sendError, sendList } = require('../lib/response');
+const { resolveMimeType, sendFileResponse } = require('../lib/fileResponse');
+const { parsePagination } = require('../lib/pagination');
 const { safeAttachmentName } = require('../lib/paths');
 const { trashRelName, movePath, removeTrashEntry, purgeTrash } = require('../lib/trash');
 
@@ -10,8 +12,7 @@ function registerTrashRoutes(fastify, ctx) {
 
   fastify.get('/api/trash', async (request, reply) => {
     const rootId = request.query.root || allRootsId;
-    const limit = Math.min(parseInt(request.query.limit || '50', 10) || 50, 200);
-    const offset = Math.max(parseInt(request.query.offset || '0', 10) || 0, 0);
+    const { limit, offset } = parsePagination(request.query);
     const rootMap = new Map(config.roots.map((root) => [root.id, root]));
 
     let rows = [];
@@ -67,40 +68,16 @@ function registerTrashRoutes(fastify, ctx) {
     } catch {
       return sendError(reply, 404, 'not_found', 'Not found');
     }
-    const mimeType = entry.mime || mime.lookup(fullPath) || 'application/octet-stream';
-    const ext = path.extname(entry.rel_path || '').toLowerCase();
-    const resolvedMime = mimeType === 'application/octet-stream' && ext === '.opus'
-      ? 'audio/opus'
-      : mimeType;
     const wantsDownload = request.query.download === '1' || request.query.download === 'true';
-    if (wantsDownload) {
-      reply.header(
-        'Content-Disposition',
-        `attachment; filename="${safeAttachmentName(entry.rel_path)}"`
-      );
-    }
-    const range = request.headers.range;
-    if (range) {
-      const match = /bytes=(\d*)-(\d*)/.exec(range);
-      if (match) {
-        const start = match[1] ? parseInt(match[1], 10) : 0;
-        const end = match[2] ? parseInt(match[2], 10) : stats.size - 1;
-        if (start >= stats.size || end >= stats.size) {
-          reply.code(416);
-          reply.header('Content-Range', `bytes */${stats.size}`);
-          return;
-        }
-        reply.code(206);
-        reply.header('Content-Range', `bytes ${start}-${end}/${stats.size}`);
-        reply.header('Accept-Ranges', 'bytes');
-        reply.header('Content-Length', end - start + 1);
-        reply.header('Content-Type', resolvedMime);
-        return reply.send(fs.createReadStream(fullPath, { start, end }));
-      }
-    }
-
-    reply.header('Content-Type', resolvedMime);
-    return reply.send(fs.createReadStream(fullPath));
+    const resolvedMime = resolveMimeType(fullPath, entry.mime);
+    return sendFileResponse({
+      reply,
+      fullPath,
+      stats,
+      mimeType: resolvedMime,
+      rangeHeader: request.headers.range,
+      downloadName: wantsDownload ? safeAttachmentName(entry.rel_path) : null,
+    });
   });
 
   fastify.post('/api/delete', async (request, reply) => {

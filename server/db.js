@@ -18,6 +18,7 @@ const ENTRY_COLUMNS = [
 ];
 const ENTRY_DETAIL_COLUMNS = [...ENTRY_COLUMNS, 'content_hash', 'hash_alg', 'inode', 'device'];
 const ENTRY_SELECT = `SELECT ${ENTRY_COLUMNS.join(', ')} FROM entries`;
+const ENTRY_SELECT_WITH_ID = `SELECT id, ${ENTRY_COLUMNS.join(', ')} FROM entries`;
 const ENTRY_DETAIL_SELECT = `SELECT ${ENTRY_DETAIL_COLUMNS.join(', ')} FROM entries`;
 const ORDER_NAME = 'ORDER BY is_dir DESC, name COLLATE NOCASE';
 const ORDER_MTIME = 'ORDER BY mtime DESC, name COLLATE NOCASE';
@@ -600,5 +601,6 @@ module.exports = {
   initDb,
   ENTRY_COLUMNS,
   ENTRY_SELECT,
+  ENTRY_SELECT_WITH_ID,
   ENTRY_DETAIL_SELECT,
 };

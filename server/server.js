@@ -4,7 +4,7 @@ const Fastify = require('fastify');
 const fastifyStatic = require('@fastify/static');
 
 const { loadConfig } = require('./config');
-const { initDb, ENTRY_COLUMNS, ENTRY_SELECT } = require('./db');
+const { initDb, ENTRY_COLUMNS, ENTRY_SELECT, ENTRY_SELECT_WITH_ID } = require('./db');
 const { createIndexer } = require('./indexer');
 const { safeJoin, normalizeRelPath, normalizeParent } = require('./utils');
 const { previewCachePath, ensurePreview } = require('./preview');
@@ -168,6 +168,7 @@ const ctx = {
   previewQueue,
   clearPreviewCache,
   entrySelect: ENTRY_SELECT,
+  entrySelectWithId: ENTRY_SELECT_WITH_ID,
   entryColumns: ENTRY_COLUMNS,
   allRootsId: ALL_ROOTS_ID,
   uploadChunkBytes: UPLOAD_CHUNK_BYTES,

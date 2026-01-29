@@ -14,6 +14,7 @@ import { formatDate, formatSize } from '../utils/formatting';
 import { itemKey as buildItemKey } from '../utils/itemKey';
 import { isImage, isVideo } from '../utils/media';
 import { hasMoreFromTotalOrCursor, loadPaged } from '../utils/pagination';
+import { ALL_ROOTS_ID } from '../constants';
 
 const props = defineProps({
   roots: {
@@ -653,7 +654,7 @@ watch(
 watch(
   () => props.roots,
   () => {
-    if (props.currentRoot?.id === '__all__') {
+    if (props.currentRoot?.id === ALL_ROOTS_ID) {
       loadPhotos({ reset: true });
     }
   }

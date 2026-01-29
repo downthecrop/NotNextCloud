@@ -8,6 +8,7 @@ import MusicView from './views/MusicView.vue';
 import { createApiClient } from './api/client';
 import { formatDate } from './utils/formatting';
 import { parseHash, buildHash } from './utils/hashNav';
+import { ALL_ROOTS_ID } from './constants';
 
 const token = ref(localStorage.getItem('localCloudToken') || '');
 const devMode = ref(false);
@@ -31,7 +32,8 @@ const status = ref({
   fastScan: true,
   fullScanIntervalHours: 0,
 });
-const allRoot = computed(() => ({ id: '__all__', name: 'All Roots' }));
+const allRoot = computed(() => ({ id: ALL_ROOTS_ID, name: 'All' }));
+const fileRoots = computed(() => (roots.value.length ? [allRoot.value, ...roots.value] : []));
 const mediaRoot = computed(() => (currentView.value === 'files' ? currentRoot.value : allRoot.value));
 
 const isAuthenticated = computed(() => Boolean(token.value) || devMode.value);
@@ -134,7 +136,9 @@ async function loadRoots() {
   const preferredRoot = filesNav.value?.rootId
     ? roots.value.find((root) => root.id === filesNav.value.rootId)
     : null;
-  if (preferredRoot) {
+  if (filesNav.value?.rootId === ALL_ROOTS_ID) {
+    currentRoot.value = allRoot.value;
+  } else if (preferredRoot) {
     currentRoot.value = preferredRoot;
   } else if (!currentRoot.value && roots.value.length) {
     currentRoot.value = roots.value[0];
@@ -157,7 +161,10 @@ async function updateRoots(nextRoots) {
     return { ok: false, error: message };
   }
   roots.value = result.data;
-  if (!roots.value.find((root) => root.id === currentRoot.value?.id)) {
+  if (
+    currentRoot.value?.id !== ALL_ROOTS_ID &&
+    !roots.value.find((root) => root.id === currentRoot.value?.id)
+  ) {
     currentRoot.value = roots.value[0] || null;
   }
   await loadStatus();
@@ -184,7 +191,9 @@ function applyHash() {
       path: parsed.files?.path || '',
       token: Date.now(),
     };
-    if (filesNav.value.rootId) {
+    if (filesNav.value.rootId === ALL_ROOTS_ID) {
+      currentRoot.value = allRoot.value;
+    } else if (filesNav.value.rootId) {
       const match = roots.value.find((root) => root.id === filesNav.value.rootId);
       if (match) {
         currentRoot.value = match;
@@ -215,9 +224,13 @@ function goFilesRoot() {
 }
 
 function openInFiles({ rootId, path }) {
-  const root = roots.value.find((item) => item.id === rootId);
-  if (root) {
-    currentRoot.value = root;
+  if (rootId === ALL_ROOTS_ID) {
+    currentRoot.value = allRoot.value;
+  } else {
+    const root = roots.value.find((item) => item.id === rootId);
+    if (root) {
+      currentRoot.value = root;
+    }
   }
   filesNav.value = {
     rootId: rootId || null,
@@ -362,6 +375,12 @@ watch(
     if (!filesNav.value.rootId) {
       return;
     }
+    if (filesNav.value.rootId === ALL_ROOTS_ID) {
+      if (currentRoot.value?.id !== ALL_ROOTS_ID) {
+        currentRoot.value = allRoot.value;
+      }
+      return;
+    }
     if (currentRoot.value?.id === filesNav.value.rootId) {
       return;
     }
@@ -405,7 +424,7 @@ watch(
 
     <FilesView
       v-if="currentView === 'files'"
-      :roots="roots"
+      :roots="fileRoots"
       :current-root="currentRoot"
       :nav-state="filesNav"
       :page-size="pageSize"

@@ -103,6 +103,152 @@ function listChildrenCursor({ db, entrySelect, rootId, parent, limit, cursor }) 
   return db.prepare(sql).all(...params, limit);
 }
 
+function listChildrenAll({ db, entrySelect, rootIds, parent, limit, offset, includeTotal }) {
+  if (!rootIds.length) {
+    return { rows: [], total: includeTotal === false ? null : 0 };
+  }
+  const placeholders = rootIds.map(() => '?').join(', ');
+  const baseWhere = `root_id IN (${placeholders}) AND parent = ?`;
+  const params = [...rootIds, parent];
+  let total = 0;
+  if (includeTotal !== false) {
+    const countSql = `SELECT COUNT(*) as count FROM entries WHERE ${baseWhere}`;
+    total = db.prepare(countSql).get(...params)?.count || 0;
+  } else {
+    total = null;
+  }
+  const dataSql = `
+    ${entrySelect}
+    WHERE ${baseWhere}
+    ORDER BY is_dir DESC, name COLLATE NOCASE, root_id, rel_path
+    LIMIT ? OFFSET ?
+  `;
+  const rows = db.prepare(dataSql).all(...params, limit, offset);
+  return { rows, total };
+}
+
+function listChildrenAllRaw({
+  db,
+  entrySelectWithId,
+  rootIds,
+  parent,
+  limit,
+  offset,
+  includeTotal,
+  maxId,
+}) {
+  if (!rootIds.length) {
+    return { rows: [], total: includeTotal === false ? null : 0 };
+  }
+  const placeholders = rootIds.map(() => '?').join(', ');
+  const maxClause = Number.isFinite(maxId) && maxId > 0 ? ' AND id <= ?' : '';
+  const baseWhere = `root_id IN (${placeholders}) AND parent = ?${maxClause}`;
+  const params = [...rootIds, parent];
+  if (maxClause) {
+    params.push(maxId);
+  }
+  let total = 0;
+  if (includeTotal !== false) {
+    const countSql = `SELECT COUNT(*) as count FROM entries WHERE ${baseWhere}`;
+    total = db.prepare(countSql).get(...params)?.count || 0;
+  } else {
+    total = null;
+  }
+  const dataSql = `
+    ${entrySelectWithId}
+    WHERE ${baseWhere}
+    ORDER BY id
+    LIMIT ? OFFSET ?
+  `;
+  const rows = db.prepare(dataSql).all(...params, limit, offset);
+  return { rows, total };
+}
+
+function listChildrenAllRawCursor({
+  db,
+  entrySelectWithId,
+  rootIds,
+  parent,
+  limit,
+  cursor,
+  includeTotal,
+  maxId,
+}) {
+  if (!rootIds.length) {
+    return { rows: [], total: includeTotal === false ? null : 0 };
+  }
+  const placeholders = rootIds.map(() => '?').join(', ');
+  const maxClause = Number.isFinite(maxId) && maxId > 0 ? ' AND id <= ?' : '';
+  const baseWhere = `root_id IN (${placeholders}) AND parent = ?${maxClause}`;
+  const baseParams = [...rootIds, parent];
+  if (maxClause) {
+    baseParams.push(maxId);
+  }
+  let total = 0;
+  if (includeTotal !== false) {
+    const countSql = `SELECT COUNT(*) as count FROM entries WHERE ${baseWhere}`;
+    total = db.prepare(countSql).get(...baseParams)?.count || 0;
+  } else {
+    total = null;
+  }
+  const dataSql = `
+    ${entrySelectWithId}
+    WHERE ${baseWhere} AND id > ?
+    ORDER BY id
+    LIMIT ?
+  `;
+  const rows = db.prepare(dataSql).all(...baseParams, cursor.id, limit);
+  return { rows, total };
+}
+
+function getMaxId({ db, rootId, parent }) {
+  const row = db
+    .prepare('SELECT MAX(id) as maxId FROM entries WHERE root_id = ? AND parent = ?')
+    .get(rootId, parent);
+  return Number(row?.maxId) || 0;
+}
+
+function getMaxIdAll({ db, rootIds, parent }) {
+  if (!rootIds.length) {
+    return 0;
+  }
+  const placeholders = rootIds.map(() => '?').join(', ');
+  const sql = `SELECT MAX(id) as maxId FROM entries WHERE root_id IN (${placeholders}) AND parent = ?`;
+  const row = db.prepare(sql).get(...rootIds, parent);
+  return Number(row?.maxId) || 0;
+}
+
+function listChildrenAllCursor({ db, entrySelect, rootIds, parent, limit, cursor, includeTotal }) {
+  if (!rootIds.length) {
+    return { rows: [], total: includeTotal === false ? null : 0 };
+  }
+  const placeholders = rootIds.map(() => '?').join(', ');
+  const baseWhere = `root_id IN (${placeholders}) AND parent = ?`;
+  const baseParams = [...rootIds, parent];
+  let total = 0;
+  if (includeTotal !== false) {
+    const countSql = `SELECT COUNT(*) as count FROM entries WHERE ${baseWhere}`;
+    total = db.prepare(countSql).get(...baseParams)?.count || 0;
+  } else {
+    total = null;
+  }
+  let where = baseWhere;
+  const dataParams = [...baseParams];
+  ({ where, params: dataParams } = applyNameCursor({
+    where,
+    params: dataParams,
+    cursor,
+  }));
+  const dataSql = `
+    ${entrySelect}
+    WHERE ${where}
+    ORDER BY is_dir DESC, name COLLATE NOCASE, root_id, rel_path
+    LIMIT ?
+  `;
+  const rows = db.prepare(dataSql).all(...dataParams, limit);
+  return { rows, total };
+}
+
 function listMediaAllCursor({
   db,
   entrySelect,
@@ -529,6 +675,12 @@ function listArtistTracksAll({ db, entrySelect, rootIds, artist, prefixLike }) {
 module.exports = {
   listMediaAll,
   listChildrenCursor,
+  listChildrenAll,
+  listChildrenAllCursor,
+  listChildrenAllRaw,
+  listChildrenAllRawCursor,
+  getMaxId,
+  getMaxIdAll,
   listMediaAllCursor,
   searchAll,
   searchAllCursor,

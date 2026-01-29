@@ -13,6 +13,7 @@ import MiniPlayer from '../components/MiniPlayer.vue';
 import { formatDuration } from '../utils/formatting';
 import { itemKey as buildItemKey } from '../utils/itemKey';
 import { hasMoreFromTotalOrCursor, loadPaged } from '../utils/pagination';
+import { ALL_ROOTS_ID } from '../constants';
 
 const props = defineProps({
   roots: {
@@ -735,7 +736,7 @@ function resolveTrackRootId(track) {
   if (track?.rootId) {
     return track.rootId;
   }
-  if (rootId.value && rootId.value !== '__all__') {
+  if (rootId.value && rootId.value !== ALL_ROOTS_ID) {
     return rootId.value;
   }
   return '';
@@ -981,7 +982,7 @@ watch(
 watch(
   () => props.roots,
   () => {
-    if (props.currentRoot?.id === '__all__') {
+    if (props.currentRoot?.id === ALL_ROOTS_ID) {
       applyNavState();
     }
   }

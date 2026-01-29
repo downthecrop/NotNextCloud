@@ -18,12 +18,14 @@ export function useLibraryApi() {
     offset = 0,
     cursor = null,
     includeTotal = true,
+    sort,
   }) =>
     apiJson(
       apiUrls.list({
         root: rootId,
         path,
         ...withPage({ limit, offset, cursor, includeTotal }),
+        sort: sort || undefined,
       })
     );
 

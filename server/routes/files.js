@@ -1,7 +1,7 @@
 const fs = require('fs');
-const path = require('path');
 const mime = require('mime-types');
 const { sendError } = require('../lib/response');
+const { resolveMimeType, sendFileResponse } = require('../lib/fileResponse');
 const { safeAttachmentName } = require('../lib/paths');
 
 function registerFileRoutes(fastify, ctx) {
@@ -32,37 +32,16 @@ function registerFileRoutes(fastify, ctx) {
       return sendError(reply, 400, 'invalid_path', 'Directory requested');
     }
 
-    const mimeType = mime.lookup(fullPath) || 'application/octet-stream';
-    const ext = path.extname(fullPath).toLowerCase();
-    const resolvedMime = mimeType === 'application/octet-stream' && ext === '.opus'
-      ? 'audio/opus'
-      : mimeType;
     const wantsDownload = request.query.download === '1' || request.query.download === 'true';
-    if (wantsDownload) {
-      reply.header('Content-Disposition', `attachment; filename="${safeAttachmentName(relPath)}"`);
-    }
-    const range = request.headers.range;
-    if (range) {
-      const match = /bytes=(\d*)-(\d*)/.exec(range);
-      if (match) {
-        const start = match[1] ? parseInt(match[1], 10) : 0;
-        const end = match[2] ? parseInt(match[2], 10) : stats.size - 1;
-        if (start >= stats.size || end >= stats.size) {
-          reply.code(416);
-          reply.header('Content-Range', `bytes */${stats.size}`);
-          return;
-        }
-        reply.code(206);
-        reply.header('Content-Range', `bytes ${start}-${end}/${stats.size}`);
-        reply.header('Accept-Ranges', 'bytes');
-        reply.header('Content-Length', end - start + 1);
-        reply.header('Content-Type', resolvedMime);
-        return reply.send(fs.createReadStream(fullPath, { start, end }));
-      }
-    }
-
-    reply.header('Content-Type', resolvedMime);
-    return reply.send(fs.createReadStream(fullPath));
+    const resolvedMime = resolveMimeType(fullPath);
+    return sendFileResponse({
+      reply,
+      fullPath,
+      stats,
+      mimeType: resolvedMime,
+      rangeHeader: request.headers.range,
+      downloadName: wantsDownload ? safeAttachmentName(relPath) : null,
+    });
   });
 
   fastify.get('/api/preview', async (request, reply) => {

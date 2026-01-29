@@ -3,9 +3,16 @@ const { encodeCursor, decodeCursor } = require('../lib/cursor');
 const { makePrefixLike } = require('../lib/paths');
 const { resolveRootScope } = require('../lib/roots');
 const { toEntryList } = require('../lib/entries');
+const { parsePagination } = require('../lib/pagination');
 const {
   listMediaAll,
   listChildrenCursor,
+  listChildrenAll,
+  listChildrenAllCursor,
+  listChildrenAllRaw,
+  listChildrenAllRawCursor,
+  getMaxId,
+  getMaxIdAll,
   listMediaAllCursor,
   searchAll,
   searchAllCursor,
@@ -38,6 +45,36 @@ function parseListCursor(raw) {
     return null;
   }
   return { isDir, name: cursor.name, path: cursor.path };
+}
+
+function parseRawCursor(raw) {
+  const cursor = decodeCursor(raw);
+  if (!cursor || typeof cursor !== 'object') {
+    return null;
+  }
+  const id = Number(cursor.id);
+  if (!Number.isFinite(id)) {
+    return null;
+  }
+  const maxId = Number(cursor.maxId);
+  return { id, maxId: Number.isFinite(maxId) ? maxId : null };
+}
+
+function parseListCursorAll(raw) {
+  const cursor = decodeCursor(raw);
+  if (!cursor || typeof cursor !== 'object') {
+    return null;
+  }
+  const isDir = parseIsDir(cursor.isDir);
+  if (
+    isDir === null ||
+    typeof cursor.name !== 'string' ||
+    typeof cursor.path !== 'string' ||
+    typeof cursor.rootId !== 'string'
+  ) {
+    return null;
+  }
+  return { isDir, name: cursor.name, path: cursor.path, rootId: cursor.rootId };
 }
 
 function parseNameCursor(raw) {
@@ -76,37 +113,141 @@ function parseMtimeCursor(raw) {
 
 function parseIncludeTotal(value) {
   if (value === undefined || value === null || value === '') {
-    return true;
-  }
-  const normalized = String(value).toLowerCase();
-  if (normalized === 'false' || normalized === '0' || normalized === 'no') {
     return false;
   }
-  return true;
+  const normalized = String(value).toLowerCase();
+  return normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'on';
 }
 
 function registerLibraryRoutes(fastify, ctx) {
-  const { config, db, entrySelect, entryColumns, allRootsId } = ctx;
+  const { config, db, entrySelect, entrySelectWithId, entryColumns, allRootsId } = ctx;
 
   fastify.get('/api/list', async (request, reply) => {
     const rootId = request.query.root;
+    const relPath = ctx.normalizeRelPath(request.query.path || '');
+    const { limit, offset } = parsePagination(request.query);
+    const sortMode = String(request.query.sort || '').toLowerCase();
+    const useRawOrder = sortMode === 'none';
+    const cursor = !useRawOrder && request.query.cursor ? parseListCursor(request.query.cursor) : null;
+    const rawCursor = useRawOrder && request.query.cursor ? parseRawCursor(request.query.cursor) : null;
+    const includeTotal = parseIncludeTotal(request.query.includeTotal);
+    let rows = [];
+    let total = includeTotal ? 0 : null;
+    let nextCursor = null;
+    if (rootId === allRootsId) {
+      if (relPath) {
+        return sendError(reply, 400, 'invalid_path', 'Only root-level listing is supported.');
+      }
+      if (useRawOrder && request.query.cursor && !rawCursor) {
+        return sendError(reply, 400, 'invalid_cursor', 'Invalid cursor');
+      }
+      const allCursor =
+        !useRawOrder && request.query.cursor ? parseListCursorAll(request.query.cursor) : null;
+      if (!useRawOrder && request.query.cursor && !allCursor) {
+        return sendError(reply, 400, 'invalid_cursor', 'Invalid cursor');
+      }
+      const rootIds = config.roots.map((root) => root.id);
+      const snapshotMaxId = useRawOrder
+        ? (rawCursor?.maxId ?? getMaxIdAll({ db: db.db, rootIds, parent: relPath }))
+        : null;
+      if (useRawOrder && rawCursor) {
+        const result = listChildrenAllRawCursor({
+          db: db.db,
+          entrySelectWithId,
+          rootIds,
+          parent: relPath,
+          limit,
+          cursor: rawCursor,
+          includeTotal,
+          maxId: snapshotMaxId,
+        });
+        rows = result.rows;
+        total = result.total;
+      } else if (allCursor && !useRawOrder) {
+        const result = listChildrenAllCursor({
+          db: db.db,
+          entrySelect,
+          rootIds,
+          parent: relPath,
+          limit,
+          cursor: allCursor,
+          includeTotal,
+        });
+        rows = result.rows;
+        total = result.total;
+      } else if (useRawOrder) {
+        const result = listChildrenAllRaw({
+          db: db.db,
+          entrySelectWithId,
+          rootIds,
+          parent: relPath,
+          limit,
+          offset,
+          includeTotal,
+          maxId: snapshotMaxId,
+        });
+        rows = result.rows;
+        total = result.total;
+      } else {
+        const result = listChildrenAll({
+          db: db.db,
+          entrySelect,
+          rootIds,
+          parent: relPath,
+          limit,
+          offset,
+          includeTotal,
+        });
+        rows = result.rows;
+        total = result.total;
+      }
+      if (rows.length === limit) {
+        const last = rows[rows.length - 1];
+        nextCursor = useRawOrder
+          ? encodeCursor({ id: last.id, maxId: snapshotMaxId })
+          : encodeCursor({
+              isDir: last.is_dir,
+              name: last.name,
+              rootId: last.root_id,
+              path: last.rel_path,
+            });
+      }
+      const items = toEntryList(rows);
+      const usedCursor = useRawOrder ? Boolean(rawCursor) : Boolean(allCursor);
+      return sendList(items, total, limit, usedCursor ? 0 : offset, nextCursor);
+    }
+
     const root = config.roots.find((item) => item.id === rootId);
     if (!root) {
       return sendError(reply, 400, 'invalid_root', 'Invalid root');
     }
-
-    const relPath = ctx.normalizeRelPath(request.query.path || '');
-    const limit = Math.min(parseInt(request.query.limit || '50', 10) || 50, 200);
-    const offset = Math.max(parseInt(request.query.offset || '0', 10) || 0, 0);
-    const cursor = request.query.cursor ? parseListCursor(request.query.cursor) : null;
-    const includeTotal = parseIncludeTotal(request.query.includeTotal);
-    if (request.query.cursor && !cursor) {
+    if (!useRawOrder && request.query.cursor && !cursor) {
       return sendError(reply, 400, 'invalid_cursor', 'Invalid cursor');
     }
-    let rows = [];
-    let total = includeTotal ? 0 : null;
-    let nextCursor = null;
-    if (cursor) {
+    if (useRawOrder && request.query.cursor && !rawCursor) {
+      return sendError(reply, 400, 'invalid_cursor', 'Invalid cursor');
+    }
+    const snapshotMaxId = useRawOrder
+      ? (rawCursor?.maxId ?? getMaxId({ db: db.db, rootId, parent: relPath }))
+      : null;
+    if (useRawOrder && rawCursor) {
+      const result = listChildrenAllRawCursor({
+        db: db.db,
+        entrySelectWithId,
+        rootIds: [rootId],
+        parent: relPath,
+        limit,
+        cursor: rawCursor,
+        includeTotal,
+        maxId: snapshotMaxId,
+      });
+      rows = result.rows;
+      total = result.total;
+      if (rows.length === limit) {
+        const last = rows[rows.length - 1];
+        nextCursor = encodeCursor({ id: last.id, maxId: snapshotMaxId });
+      }
+    } else if (cursor) {
       rows = listChildrenCursor({
         db: db.db,
         entrySelect,
@@ -126,6 +267,19 @@ function registerLibraryRoutes(fastify, ctx) {
           path: last.rel_path,
         });
       }
+    } else if (useRawOrder) {
+      const result = listChildrenAllRaw({
+        db: db.db,
+        entrySelectWithId,
+        rootIds: [rootId],
+        parent: relPath,
+        limit,
+        offset,
+        includeTotal,
+        maxId: snapshotMaxId,
+      });
+      rows = result.rows;
+      total = result.total;
     } else {
       rows = db.listChildren.all(rootId, relPath, limit, offset);
       if (includeTotal) {
@@ -133,7 +287,8 @@ function registerLibraryRoutes(fastify, ctx) {
       }
     }
     const items = toEntryList(rows);
-    return sendList(items, total, limit, cursor ? 0 : offset, nextCursor);
+    const usedCursor = useRawOrder ? Boolean(rawCursor) : Boolean(cursor);
+    return sendList(items, total, limit, usedCursor ? 0 : offset, nextCursor);
   });
 
   fastify.get('/api/search', async (request, reply) => {
@@ -143,8 +298,7 @@ function registerLibraryRoutes(fastify, ctx) {
       return sendError(reply, 400, 'invalid_root', 'Invalid root');
     }
     const query = (request.query.q || '').trim();
-    const limit = Math.min(parseInt(request.query.limit || '50', 10) || 50, 200);
-    const offset = Math.max(parseInt(request.query.offset || '0', 10) || 0, 0);
+    const { limit, offset } = parsePagination(request.query);
     const type = (request.query.type || 'all').toLowerCase();
     const includeTotal = parseIncludeTotal(request.query.includeTotal);
     if (!query) {
@@ -165,33 +319,33 @@ function registerLibraryRoutes(fastify, ctx) {
     let nextCursor = null;
     if (cursor) {
       if (useFts) {
-      const result = searchFtsAllCursor({
-        db: db.db,
-        entryColumns,
-        rootIds: scope.rootIds,
-        type,
-        ftsQuery,
-        prefixLike,
-        limit,
-        cursor,
-        includeTotal,
-      });
-      rows = result.rows;
-      total = result.total;
-    } else {
-      const result = searchAllCursor({
-        db: db.db,
-        entrySelect,
-        rootIds: scope.rootIds,
-        type,
-        like,
-        prefixLike,
-        limit,
-        cursor,
-        includeTotal,
-      });
-      rows = result.rows;
-      total = result.total;
+        const result = searchFtsAllCursor({
+          db: db.db,
+          entryColumns,
+          rootIds: scope.rootIds,
+          type,
+          ftsQuery,
+          prefixLike,
+          limit,
+          cursor,
+          includeTotal,
+        });
+        rows = result.rows;
+        total = result.total;
+      } else {
+        const result = searchAllCursor({
+          db: db.db,
+          entrySelect,
+          rootIds: scope.rootIds,
+          type,
+          like,
+          prefixLike,
+          limit,
+          cursor,
+          includeTotal,
+        });
+        rows = result.rows;
+        total = result.total;
       }
       if (rows.length === limit) {
         const last = rows[rows.length - 1];
@@ -283,8 +437,7 @@ function registerLibraryRoutes(fastify, ctx) {
     }
 
     const type = (request.query.type || '').toLowerCase();
-    const limit = Math.min(parseInt(request.query.limit || '50', 10) || 50, 200);
-    const offset = Math.max(parseInt(request.query.offset || '0', 10) || 0, 0);
+    const { limit, offset } = parsePagination(request.query);
     const prefixLike = makePrefixLike(request.query.pathPrefix);
     const cursor = request.query.cursor ? parseMtimeCursor(request.query.cursor) : null;
     const includeTotal = parseIncludeTotal(request.query.includeTotal);
@@ -371,8 +524,7 @@ function registerLibraryRoutes(fastify, ctx) {
     if (!scope) {
       return sendError(reply, 400, 'invalid_root', 'Invalid root');
     }
-    const limit = Math.min(parseInt(request.query.limit || '50', 10) || 50, 200);
-    const offset = Math.max(parseInt(request.query.offset || '0', 10) || 0, 0);
+    const { limit, offset } = parsePagination(request.query);
     const prefixLike = makePrefixLike(request.query.pathPrefix);
     let rows = [];
     let total = 0;
@@ -408,8 +560,7 @@ function registerLibraryRoutes(fastify, ctx) {
     if (!scope) {
       return sendError(reply, 400, 'invalid_root', 'Invalid root');
     }
-    const limit = Math.min(parseInt(request.query.limit || '50', 10) || 50, 200);
-    const offset = Math.max(parseInt(request.query.offset || '0', 10) || 0, 0);
+    const { limit, offset } = parsePagination(request.query);
     const prefixLike = makePrefixLike(request.query.pathPrefix);
     let rows = [];
     let total = 0;

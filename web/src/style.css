@@ -571,6 +571,30 @@ input::placeholder {
   margin-bottom: 6px;
 }
 
+.list-sort {
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.list-sort.active {
+  color: var(--ink);
+}
+
+.sort-indicator {
+  font-size: 10px;
+  opacity: 0.7;
+}
+
 .list-row {
   border-radius: var(--radius-sm);
   transition: background 0.2s ease;
@@ -773,15 +797,6 @@ input::placeholder {
   box-shadow: 0 0 0 2px rgba(90, 211, 255, 0.25);
 }
 
-.tile--wide {
-  grid-column: span 2;
-}
-
-.tile--tall {
-  grid-row: span 2;
-  min-height: 240px;
-}
-
 .tile img,
 .tile video {
   width: 100%;
@@ -948,25 +963,6 @@ input::placeholder {
   font-weight: 600;
 }
 
-.player-card {
-  background: var(--panel-strong);
-  border-radius: var(--radius-md);
-  padding: 16px;
-  display: grid;
-  gap: 12px;
-}
-
-.player-title {
-  font-size: 14px;
-  text-transform: uppercase;
-  letter-spacing: 1px;
-  color: var(--muted);
-}
-
-.player-track audio {
-  width: 100%;
-}
-
 .player-bar {
   position: sticky;
   bottom: 16px;
@@ -1058,14 +1054,6 @@ input::placeholder {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.player-bar-controls {
-  display: grid;
-  gap: 10px;
-  justify-items: center;
-  align-items: center;
-  flex: 1;
 }
 
 .player-bar-seek {
@@ -1193,28 +1181,6 @@ input::placeholder {
 .player-bar-volume.volume-active .volume-popover {
   opacity: 1;
   pointer-events: auto;
-}
-
-.music-tabs {
-  display: flex;
-  gap: 10px;
-  margin-bottom: 14px;
-}
-
-.music-tabs button {
-  background: var(--panel-strong);
-  border: 1px solid var(--line);
-  color: var(--ink);
-  padding: 6px 14px;
-  border-radius: var(--radius-pill);
-  cursor: pointer;
-}
-
-.music-tabs button.active {
-  background: linear-gradient(135deg, var(--accent), var(--accent-2));
-  color: #06101f;
-  border-color: transparent;
-  box-shadow: var(--glow);
 }
 
 .album-grid {
@@ -1429,45 +1395,6 @@ input::placeholder {
   background: rgba(90, 211, 255, 0.2);
 }
 
-.modal-media {
-  width: min(760px, 100%);
-}
-
-.modal-media-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-}
-
-.modal-media-body {
-  background: var(--panel-strong);
-  border-radius: var(--radius-md);
-  padding: 12px;
-  display: grid;
-  place-items: center;
-  min-height: 320px;
-  max-height: 70vh;
-  overflow: hidden;
-}
-
-.modal-media-body img,
-.modal-media-body video {
-  max-width: 100%;
-  max-height: 60vh;
-  width: 100%;
-  height: auto;
-  object-fit: contain;
-  border-radius: var(--radius-sm);
-}
-
-.modal-media-meta {
-  display: grid;
-  gap: 4px;
-  color: var(--muted);
-  font-size: 13px;
-}
-
 .meta {
   font-size: 13px;
   color: var(--muted);
@@ -1636,20 +1563,9 @@ input::placeholder {
   accent-color: var(--accent);
 }
 
-.settings-list,
 .settings-drive-list {
   display: grid;
   gap: 8px;
-}
-
-.settings-drive {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  padding: 10px 12px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
 }
 
 .settings-drive-editor {
@@ -1677,15 +1593,6 @@ input::placeholder {
   justify-content: space-between;
   align-items: center;
   gap: 8px;
-}
-
-.settings-drive-info {
-  display: grid;
-  gap: 4px;
-}
-
-.settings-drive-name {
-  font-weight: 600;
 }
 
 .settings-drive-id {
@@ -1845,51 +1752,6 @@ input::placeholder {
   max-width: min(420px, 70vw);
 }
 
-.modal-fullscreen {
-  width: 100%;
-  height: 100%;
-  border-radius: 0;
-  padding: 0;
-  background: rgba(7, 12, 24, 0.95);
-  position: relative;
-}
-
-.modal-controls {
-  position: absolute;
-  top: 20px;
-  right: 20px;
-  display: flex;
-  gap: 10px;
-  z-index: 2;
-}
-
-.modal-media-stage {
-  position: absolute;
-  inset: 60px 24px 80px 24px;
-  display: grid;
-  place-items: center;
-  overflow: hidden;
-}
-
-.modal-media-stage img,
-.modal-media-stage video {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
-  transition: transform 0.2s ease;
-}
-
-.modal-meta {
-  position: absolute;
-  left: 24px;
-  bottom: 20px;
-  color: var(--muted);
-  font-size: 13px;
-  display: grid;
-  gap: 4px;
-  z-index: 2;
-}
-
 .modal-card {
   background: var(--panel);
   border: 1px solid var(--line);
@@ -1989,9 +1851,6 @@ input::placeholder {
     width: calc(100% - 48px);
     margin: 0 24px 24px;
   }
-  .player-bar-controls {
-    justify-items: start;
-  }
   .player-bar-seek {
     min-width: 0;
     width: 100%;
@@ -2022,8 +1881,8 @@ input::placeholder {
   .list-row {
     grid-template-columns: minmax(160px, 2fr) 90px 100px;
   }
-  .list-header div:last-child,
-  .list-row div:last-child {
+  .list-header > *:last-child,
+  .list-row > *:last-child {
     display: none;
   }
   .music-header,

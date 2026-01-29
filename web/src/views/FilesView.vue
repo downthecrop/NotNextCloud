@@ -8,6 +8,7 @@ import { useLibraryApi } from '../composables/useLibraryApi';
 import { useMenu, useGlobalMenuClose } from '../composables/useMenu';
 import { useMultiSelect } from '../composables/useMultiSelect';
 import { useSidebar } from '../composables/useSidebar';
+import { useSort } from '../composables/useSort';
 import { useTrashApi } from '../composables/useTrashApi';
 import { useDebouncedWatch } from '../composables/useDebouncedWatch';
 import MiniPlayer from '../components/MiniPlayer.vue';
@@ -15,6 +16,7 @@ import { formatDate, formatSize } from '../utils/formatting';
 import { itemKey as buildItemKey } from '../utils/itemKey';
 import { isAudio, isImage, isMedia, isVideo } from '../utils/media';
 import { hasMoreFromTotalOrCursor, loadPaged } from '../utils/pagination';
+import { ALL_ROOTS_ID } from '../constants';
 
 const props = defineProps({
   roots: {
@@ -68,6 +70,10 @@ const { listDirectory, searchEntries } = useLibraryApi();
 const { listTrash, deletePaths, restoreTrash, deleteTrash, clearTrash: clearTrashApi } =
   useTrashApi();
 const { downloadFile, downloadZipPaths } = useDownloads();
+const { sortKey, sortDir, setSort, compareText } = useSort({
+  initialKey: '',
+  initialDir: 'asc',
+});
 
 const currentPath = ref('');
 const items = ref([]);
@@ -114,6 +120,10 @@ const pendingOpen = ref(null);
 useGlobalMenuClose([closeBreadcrumbMenu, closeItemMenu]);
 
 const rootId = computed(() => props.currentRoot?.id || '');
+const isAllRoot = computed(() => props.currentRoot?.id === ALL_ROOTS_ID);
+const canUpload = computed(
+  () => Boolean(props.uploadEnabled && props.currentRoot && !isAllRoot.value)
+);
 function itemRootId(item) {
   return item?.rootId || rootId.value;
 }
@@ -128,10 +138,61 @@ const { hasImageError, markImageError, resetImageErrors } = useImageErrors({
 });
 const isSearchMode = computed(() => !isTrashView.value && Boolean(searchQuery.value.trim()));
 const displayItems = computed(() => {
-  if (isTrashView.value) {
-    return trashItems.value;
+  const list = isTrashView.value
+    ? trashItems.value
+    : isSearchMode.value
+    ? searchResults.value
+    : items.value;
+  if (!sortKey.value || !Array.isArray(list) || list.length < 2) {
+    return list;
   }
-  return isSearchMode.value ? searchResults.value : items.value;
+  const key = sortKey.value;
+  const direction = sortDir.value === 'desc' ? -1 : 1;
+  const isNumeric = key === 'size' || key === 'mtime';
+  const getValue = (item) => {
+    if (key === 'name') {
+      return item.name || '';
+    }
+    if (key === 'size') {
+      return item.isDir ? 0 : item.size || 0;
+    }
+    if (key === 'mtime') {
+      return isTrashView.value ? item.deletedAt || 0 : item.mtime || 0;
+    }
+    if (key === 'type') {
+      if (item.isDir) {
+        return 'folder';
+      }
+      return item.ext ? item.ext.replace('.', '') : '';
+    }
+    return '';
+  };
+  return [...list].sort((a, b) => {
+    const dirDiff = a.isDir === b.isDir ? 0 : a.isDir ? -1 : 1;
+    if (dirDiff !== 0) {
+      return dirDiff;
+    }
+    const valueA = getValue(a);
+    const valueB = getValue(b);
+    let diff = 0;
+    if (isNumeric) {
+      diff = (Number(valueA) || 0) - (Number(valueB) || 0);
+    } else {
+      diff = compareText(valueA, valueB);
+    }
+    if (diff !== 0) {
+      return diff * direction;
+    }
+    const nameDiff = compareText(a.name, b.name);
+    if (nameDiff !== 0) {
+      return nameDiff * direction;
+    }
+    const rootDiff = compareText(a.rootId, b.rootId);
+    if (rootDiff !== 0) {
+      return rootDiff * direction;
+    }
+    return compareText(a.path, b.path) * direction;
+  });
 });
 const {
   selectedKeys: selectedPaths,
@@ -213,10 +274,11 @@ async function scheduleScan(mode, pathValue) {
   if (!props.currentRoot) {
     return;
   }
+  const targetRoot = isAllRoot.value ? null : props.currentRoot.id;
   await apiJson(apiUrls.scan(), {
     method: 'POST',
     body: JSON.stringify({
-      root: props.currentRoot.id,
+      root: targetRoot,
       path: pathValue || '',
       mode,
     }),
@@ -360,7 +422,7 @@ async function confirmClearTrash() {
   if (!confirm('Permanently delete all items in Recycle Bin?')) {
     return;
   }
-  await clearTrashApi('__all__');
+  await clearTrashApi(ALL_ROOTS_ID);
   clearSelection();
   await loadTrash({ reset: true });
   needsFilesRefresh.value = true;
@@ -431,7 +493,7 @@ async function openTrash() {
 }
 
 function openFilePicker() {
-  if (!props.currentRoot || uploading.value || !props.uploadEnabled) {
+  if (!canUpload.value || uploading.value) {
     return;
   }
   fileInput.value?.click();
@@ -447,7 +509,7 @@ function handleFileSelect(event) {
 }
 
 function handleDragOver(event) {
-  if (!props.currentRoot || uploading.value || !props.uploadEnabled) {
+  if (!canUpload.value || uploading.value) {
     return;
   }
   if (!event.dataTransfer?.types?.includes('Files')) {
@@ -459,7 +521,7 @@ function handleDragOver(event) {
 }
 
 function handleDragEnter(event) {
-  if (!props.currentRoot || uploading.value || !props.uploadEnabled) {
+  if (!canUpload.value || uploading.value) {
     return;
   }
   if (!event.dataTransfer?.types?.includes('Files')) {
@@ -482,7 +544,7 @@ function handleDragLeave(event) {
 }
 
 function handleDrop(event) {
-  if (!props.currentRoot || uploading.value || !props.uploadEnabled) {
+  if (!canUpload.value || uploading.value) {
     return;
   }
   if (!event.dataTransfer?.types?.includes('Files')) {
@@ -499,7 +561,7 @@ function handleDrop(event) {
 }
 
 async function uploadFiles(files) {
-  if (!props.currentRoot || !files.length || !props.uploadEnabled) {
+  if (!canUpload.value || !files.length) {
     return;
   }
   uploading.value = true;
@@ -670,6 +732,7 @@ async function loadList({ reset = true } = {}) {
         offset: pageOffset,
         cursor: pageCursor,
         includeTotal: false,
+        sort: sortKey.value || 'none',
       }),
   });
 }
@@ -688,7 +751,7 @@ async function loadTrash({ reset = true } = {}) {
     errorMessage: 'Failed to load trash',
     onReset: clearSelection,
     fetchPage: ({ offset: pageOffset }) =>
-      listTrash({ rootId: '__all__', limit: props.pageSize, offset: pageOffset }),
+      listTrash({ rootId: ALL_ROOTS_ID, limit: props.pageSize, offset: pageOffset }),
   });
 }
 
@@ -696,7 +759,7 @@ async function runSearch({ reset = true } = {}) {
   if (isTrashView.value) {
     return;
   }
-  const targetRootId = searchAllRoots.value ? '__all__' : props.currentRoot?.id;
+  const targetRootId = searchAllRoots.value ? ALL_ROOTS_ID : props.currentRoot?.id;
   if (!targetRootId) {
     return;
   }
@@ -936,6 +999,13 @@ watch(
     resetImageErrors();
     const pending = pendingOpen.value;
     pendingOpen.value = null;
+    if (isAllRoot.value) {
+      if (props.navState?.rootId === ALL_ROOTS_ID && props.navState?.path) {
+        props.onNavigatePath?.({ rootId: ALL_ROOTS_ID, path: '' });
+      }
+      loadList({ reset: true });
+      return;
+    }
     if (pending?.path && pending?.rootId === props.currentRoot?.id) {
       currentPath.value = pending.path;
       props.onNavigatePath?.({ rootId: pending.rootId, path: pending.path });
@@ -957,6 +1027,16 @@ watch(
       return;
     }
     if (!current || !value || typeof value.path !== 'string') {
+      return;
+    }
+    if (current.id === ALL_ROOTS_ID) {
+      if (value.path) {
+        props.onNavigatePath?.({ rootId: ALL_ROOTS_ID, path: '' });
+      }
+      if (currentPath.value) {
+        currentPath.value = '';
+        loadList({ reset: true });
+      }
       return;
     }
     if (value.rootId && value.rootId !== current.id) {
@@ -1111,7 +1191,7 @@ function handleKey(event) {
             v-if="!isTrashView"
             class="action-btn"
             @click="openFilePicker"
-            :disabled="!currentRoot || uploading || !uploadEnabled"
+            :disabled="!canUpload || uploading"
           >
             <i class="fa-solid fa-arrow-up-from-bracket"></i>
             Upload
@@ -1201,15 +1281,52 @@ function handleKey(event) {
       <div v-else-if="error" class="empty-state">{{ error }}</div>
       <div v-else-if="!displayItems.length" class="empty-state">
         <span v-if="isTrashView">Recycle Bin is empty.</span>
+        <span v-else-if="isAllRoot">Select a root to upload or browse deeper.</span>
         <span v-else>Drop files into the root folder to populate this view.</span>
       </div>
 
       <div v-else-if="viewMode === 'list'">
         <div class="list-header">
-          <div>Name</div>
-          <div>Size</div>
-          <div>{{ isTrashView ? 'Deleted' : 'Modified' }}</div>
-          <div>Type</div>
+          <button
+            class="list-sort"
+            type="button"
+            :class="{ active: sortKey === 'name' }"
+            :aria-sort="sortKey === 'name' ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'"
+            @click="setSort('name')"
+          >
+            Name
+            <span v-if="sortKey === 'name'" class="sort-indicator">{{ sortDir === 'asc' ? 'ASC' : 'DESC' }}</span>
+          </button>
+          <button
+            class="list-sort"
+            type="button"
+            :class="{ active: sortKey === 'size' }"
+            :aria-sort="sortKey === 'size' ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'"
+            @click="setSort('size')"
+          >
+            Size
+            <span v-if="sortKey === 'size'" class="sort-indicator">{{ sortDir === 'asc' ? 'ASC' : 'DESC' }}</span>
+          </button>
+          <button
+            class="list-sort"
+            type="button"
+            :class="{ active: sortKey === 'mtime' }"
+            :aria-sort="sortKey === 'mtime' ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'"
+            @click="setSort('mtime')"
+          >
+            {{ isTrashView ? 'Deleted' : 'Modified' }}
+            <span v-if="sortKey === 'mtime'" class="sort-indicator">{{ sortDir === 'asc' ? 'ASC' : 'DESC' }}</span>
+          </button>
+          <button
+            class="list-sort"
+            type="button"
+            :class="{ active: sortKey === 'type' }"
+            :aria-sort="sortKey === 'type' ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'"
+            @click="setSort('type')"
+          >
+            Type
+            <span v-if="sortKey === 'type'" class="sort-indicator">{{ sortDir === 'asc' ? 'ASC' : 'DESC' }}</span>
+          </button>
         </div>
         <div
           v-for="(item, index) in displayItems"

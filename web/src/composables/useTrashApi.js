@@ -1,9 +1,10 @@
+import { ALL_ROOTS_ID } from '../constants';
 import { useApi } from './useApi';
 
 export function useTrashApi() {
   const { apiJson, apiUrls } = useApi();
 
-  const listTrash = ({ rootId = '__all__', limit = 50, offset = 0 }) =>
+  const listTrash = ({ rootId = ALL_ROOTS_ID, limit = 50, offset = 0 }) =>
     apiJson(
       apiUrls.trash({
         root: rootId,
@@ -30,7 +31,7 @@ export function useTrashApi() {
       body: JSON.stringify({ ids }),
     });
 
-  const clearTrash = (rootId = '__all__') =>
+  const clearTrash = (rootId = ALL_ROOTS_ID) =>
     apiJson(apiUrls.trashClear(), {
       method: 'POST',
       body: JSON.stringify({ root: rootId }),
