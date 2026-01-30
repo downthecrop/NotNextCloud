@@ -27,7 +27,6 @@ function formatRootsResponse(roots) {
     id: root.id,
     name: root.name,
     path: root.path,
-    absPath: root.absPath,
   }));
 }
 

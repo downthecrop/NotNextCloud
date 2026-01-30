@@ -1,0 +1,3 @@
+[submodule "clients/android"]
+	path = clients/android
+	url = git@github.com:downthecrop/NNC-Android.git

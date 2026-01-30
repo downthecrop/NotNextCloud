@@ -6,13 +6,14 @@ const {
   parseSize,
   uploadIdFor,
   uploadTempPath,
+  resolveUploadTarget,
   finalizeUpload,
   ensureEmptyFile,
   upsertUploadedFile,
 } = require('../lib/uploads');
 
 function registerUploadRoutes(fastify, ctx) {
-  const { config, indexer, safeJoin, normalizeRelPath, normalizeParent, uploadChunkBytes } = ctx;
+  const { config, indexer, safeJoin, normalizeParent, uploadChunkBytes } = ctx;
 
   fastify.get('/api/upload/status', async (request, reply) => {
     if (!config.uploadEnabled) {
@@ -24,11 +25,13 @@ function registerUploadRoutes(fastify, ctx) {
       return sendError(reply, 400, 'invalid_root', 'Invalid root');
     }
 
-    const basePath = normalizeRelPath(request.query.path || '');
-    const fileRelRaw = typeof request.query.file === 'string' ? request.query.file : '';
-    const fileRel = normalizeRelPath(fileRelRaw.replace(/\\/g, '/'));
-    if (!fileRel) {
-      return sendError(reply, 400, 'invalid_request', 'Missing file name');
+    const { targetRel, error: targetError } = resolveUploadTarget({
+      basePath: request.query.path,
+      filePath: request.query.file,
+      target: request.query.target,
+    });
+    if (!targetRel) {
+      return sendError(reply, 400, 'invalid_request', targetError || 'Missing file name');
     }
 
     const size = parseSize(request.query.size);
@@ -37,7 +40,6 @@ function registerUploadRoutes(fastify, ctx) {
     }
     const overwrite = parseBoolean(request.query.overwrite, config.uploadOverwrite);
 
-    const targetRel = normalizeRelPath(path.posix.join(basePath, fileRel));
     const fullPath = safeJoin(root.absPath, targetRel);
     if (!fullPath) {
       return sendError(reply, 400, 'invalid_path', 'Invalid path');
@@ -124,15 +126,17 @@ function registerUploadRoutes(fastify, ctx) {
       }
       const rootId = request.query.root;
       const root = config.roots.find((item) => item.id === rootId);
-      if (!root) {
-        return sendError(reply, 400, 'invalid_root', 'Invalid root');
-      }
+    if (!root) {
+      return sendError(reply, 400, 'invalid_root', 'Invalid root');
+    }
 
-      const basePath = normalizeRelPath(request.query.path || '');
-      const fileRelRaw = typeof request.query.file === 'string' ? request.query.file : '';
-      const fileRel = normalizeRelPath(fileRelRaw.replace(/\\/g, '/'));
-      if (!fileRel) {
-        return sendError(reply, 400, 'invalid_request', 'Missing file name');
+      const { targetRel, error: targetError } = resolveUploadTarget({
+        basePath: request.query.path,
+        filePath: request.query.file,
+        target: request.query.target,
+      });
+      if (!targetRel) {
+        return sendError(reply, 400, 'invalid_request', targetError || 'Missing file name');
       }
 
       const size = parseSize(request.query.size);
@@ -145,7 +149,6 @@ function registerUploadRoutes(fastify, ctx) {
       }
       const overwrite = parseBoolean(request.query.overwrite, config.uploadOverwrite);
 
-      const targetRel = normalizeRelPath(path.posix.join(basePath, fileRel));
       const fullPath = safeJoin(root.absPath, targetRel);
       if (!fullPath) {
         return sendError(reply, 400, 'invalid_path', 'Invalid path');

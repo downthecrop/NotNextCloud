@@ -55,6 +55,7 @@ function registerInfoRoutes(fastify, ctx) {
           maxFiles,
           overwriteByDefault: config.uploadOverwrite,
           pathParam: true,
+          targetParam: true,
           chunked: true,
           resume: true,
           chunkBytes: uploadChunkBytes,

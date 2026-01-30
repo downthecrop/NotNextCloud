@@ -120,5 +120,16 @@
 - Preferred auth config source (env vs config file).
 - Should we include a lightweight reverse proxy or rely on direct binding.
 
+### Android Client (Expo) - Simple Setup
+- The Android client is located in `clients/android` and uses Expo Router
+- Make sure the server container is running: `docker ps` (should show notnextcloud2-local-cloud on port 4170)
+- Navigate to the Android client directory: `cd clients/android`
+- Install dependencies: `npm install`
+- Make sure an Android emulator is running: `adb devices` (should show a device)
+- Run the app with the correct server URL:
+  - For emulator: `EXPO_PUBLIC_API_URL=http://10.0.2.2:4170 npm run android`
+  - For physical device: `EXPO_PUBLIC_API_URL=http://YOUR_HOST_IP:4170 npm run android`
+- The app will connect to the server running in the Docker container
+
 ### Workflow Note
 - After any code change, reboot Docker (`docker compose up -d --build`) before sending the final response. Do not send the final response until the Docker restart attempt has been made.

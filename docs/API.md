@@ -97,7 +97,7 @@ Fetches info + roots + status in one request (useful for mobile/desktop clients)
   "ok": true,
   "data": {
     "info": { "apiVersion": 1, "serverVersion": "0.1.0", "capabilities": { ... } },
-    "roots": [{ "id": "root", "name": "Drive", "path": "/mnt/drive", "absPath": "/mnt/drive" }],
+    "roots": [{ "id": "root", "name": "Drive", "path": "/mnt/drive" }],
     "status": { "lastScanAt": 0, "scanInProgress": false, "scanIntervalSeconds": 60 }
   }
 }
@@ -224,7 +224,8 @@ Returns indexer status.
 Check current upload state for a file.
 
 Query:
-- `root`, `path`, `file`, `size`, `overwrite=0|1`
+- `root`, `size`, `overwrite=0|1`
+- Either `path` + `file` **or** `target` (full relative path)
 
 Response `data`:
 - `status`: `ready | complete | exists`
@@ -235,7 +236,8 @@ Response `data`:
 Upload a chunk at a given offset.
 
 Query:
-- `root`, `path`, `file`, `size`, `offset`, `overwrite=0|1`
+- `root`, `size`, `offset`, `overwrite=0|1`
+- Either `path` + `file` **or** `target` (full relative path)
 
 Body: raw bytes (`Content-Type: application/octet-stream`)
 

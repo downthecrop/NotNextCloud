@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const mime = require('mime-types');
 const crypto = require('crypto');
-const { normalizeParent } = require('../utils');
+const { normalizeParent, normalizeRelPath } = require('../utils');
 
 function parseBoolean(value, defaultValue = false) {
   if (value === undefined || value === null) {
@@ -38,6 +38,28 @@ function uploadIdFor(rootId, relPath, size) {
 
 function uploadTempPath(config, uploadId) {
   return path.join(config.uploadTempDir, `${uploadId}.part`);
+}
+
+function resolveUploadTarget({ basePath, filePath, target }) {
+  const explicitTarget = typeof target === 'string' ? target.trim() : '';
+  if (explicitTarget) {
+    const normalized = normalizeRelPath(explicitTarget.replace(/\\/g, '/'));
+    if (!normalized) {
+      return { error: 'Missing file name' };
+    }
+    return { targetRel: normalized };
+  }
+  const rawFile = typeof filePath === 'string' ? filePath.trim() : '';
+  const normalizedFile = normalizeRelPath(rawFile.replace(/\\/g, '/'));
+  if (!normalizedFile) {
+    return { error: 'Missing file name' };
+  }
+  const base = normalizeRelPath(basePath || '');
+  const targetRel = normalizeRelPath(path.posix.join(base, normalizedFile));
+  if (!targetRel) {
+    return { error: 'Missing file name' };
+  }
+  return { targetRel };
 }
 
 async function finalizeUpload({ partPath, fullPath, overwrite }) {
@@ -147,6 +169,7 @@ module.exports = {
   parseSize,
   uploadIdFor,
   uploadTempPath,
+  resolveUploadTarget,
   finalizeUpload,
   ensureEmptyFile,
   upsertUploadedFile,

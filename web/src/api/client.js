@@ -79,7 +79,19 @@ export function createApiClient({
   };
 
   const apiJson = async (url, options = {}) => {
-    const res = await apiFetch(url, options);
+    let res;
+    try {
+      res = await apiFetch(url, options);
+    } catch (error) {
+      return {
+        ok: false,
+        status: 0,
+        error: {
+          message: 'Network error',
+          details: error?.message || null,
+        },
+      };
+    }
     let payload = null;
     try {
       payload = await res.json();

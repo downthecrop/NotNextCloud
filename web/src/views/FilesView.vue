@@ -1076,35 +1076,28 @@ watch(modalOpen, (value) => {
   document.body.style.overflow = value ? 'hidden' : '';
 });
 
+const handleWindowDragOver = (event) => {
+  if (event.dataTransfer?.types?.includes('Files')) {
+    event.preventDefault();
+  }
+};
+const handleWindowDrop = (event) => {
+  if (event.dataTransfer?.types?.includes('Files')) {
+    event.preventDefault();
+    dragDepth.value = 0;
+    dragActive.value = false;
+  }
+};
+
 onMounted(() => {
-  const handleWindowDragOver = (event) => {
-    if (event.dataTransfer?.types?.includes('Files')) {
-      event.preventDefault();
-    }
-  };
-  const handleWindowDrop = (event) => {
-    if (event.dataTransfer?.types?.includes('Files')) {
-      event.preventDefault();
-      dragDepth.value = 0;
-      dragActive.value = false;
-    }
-  };
   window.addEventListener('dragover', handleWindowDragOver);
   window.addEventListener('drop', handleWindowDrop);
   window.addEventListener('keydown', handleKey);
-  window.__localCloudDragOver = handleWindowDragOver;
-  window.__localCloudDrop = handleWindowDrop;
 });
 
 onUnmounted(() => {
-  if (window.__localCloudDragOver) {
-    window.removeEventListener('dragover', window.__localCloudDragOver);
-    delete window.__localCloudDragOver;
-  }
-  if (window.__localCloudDrop) {
-    window.removeEventListener('drop', window.__localCloudDrop);
-    delete window.__localCloudDrop;
-  }
+  window.removeEventListener('dragover', handleWindowDragOver);
+  window.removeEventListener('drop', handleWindowDrop);
   window.removeEventListener('keydown', handleKey);
   document.body.style.overflow = '';
 });

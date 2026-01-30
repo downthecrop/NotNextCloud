@@ -115,6 +115,10 @@ function initDb(dbPath) {
     CREATE INDEX IF NOT EXISTS idx_entries_hash ON entries (content_hash);
     CREATE INDEX IF NOT EXISTS idx_entries_root_rel ON entries (root_id, rel_path);
     CREATE INDEX IF NOT EXISTS idx_entries_root_mtime ON entries (root_id, mtime);
+    CREATE INDEX IF NOT EXISTS idx_entries_root_parent_order
+      ON entries (root_id, parent, is_dir DESC, name COLLATE NOCASE, rel_path);
+    CREATE INDEX IF NOT EXISTS idx_entries_root_mtime_order
+      ON entries (root_id, is_dir, mtime DESC, name COLLATE NOCASE, rel_path);
   `);
 
   db.exec(`
