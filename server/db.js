@@ -151,11 +151,25 @@ function initDb(dbPath) {
   `);
 
   const ftsCount = db.prepare('SELECT COUNT(*) as count FROM entries_fts').get()?.count || 0;
-  if (ftsCount === 0) {
-    db.exec(`
-      INSERT INTO entries_fts(rowid, name, title, artist, album, root_id, rel_path, mime, is_dir)
-      SELECT id, name, title, artist, album, root_id, rel_path, mime, is_dir FROM entries
-    `);
+  const entriesCount = db.prepare('SELECT COUNT(*) as count FROM entries').get()?.count || 0;
+  const rebuildFts = () => {
+    db.exec(`INSERT INTO entries_fts(entries_fts) VALUES('rebuild')`);
+  };
+  if (ftsCount === 0 && entriesCount > 0) {
+    rebuildFts();
+  } else if (ftsCount > 0 && entriesCount > 0) {
+    const sample = db
+      .prepare("SELECT name FROM entries WHERE name IS NOT NULL AND name != '' LIMIT 1")
+      .get();
+    const token = sample?.name?.match(/[A-Za-z0-9]{2,}/)?.[0] || null;
+    if (token) {
+      const probe = db
+        .prepare('SELECT rowid FROM entries_fts WHERE entries_fts MATCH ? LIMIT 1')
+        .get(token);
+      if (!probe) {
+        rebuildFts();
+      }
+    }
   }
   const ftsEnabled = true;
 
@@ -202,14 +216,14 @@ function initDb(dbPath) {
 
   const searchByName = db.prepare(
     entryListSql({
-      where: 'name LIKE ?',
+      where: 'name LIKE ? OR title LIKE ? OR artist LIKE ? OR album LIKE ?',
       order: ORDER_NAME,
     })
   );
 
   const countSearch = db.prepare(
     entryCountSql({
-      where: 'name LIKE ?',
+      where: 'name LIKE ? OR title LIKE ? OR artist LIKE ? OR album LIKE ?',
     })
   );
 
@@ -348,6 +362,31 @@ function initDb(dbPath) {
     ) AS albums
   `);
 
+  const listAlbumsSearch = db.prepare(`
+    SELECT album_key, album, artist, COUNT(*) as tracks, MAX(mtime) as latest
+    FROM entries
+    WHERE root_id = ?
+      AND is_dir = 0
+      AND mime LIKE 'audio/%'
+      AND (album LIKE ? OR artist LIKE ?)
+    GROUP BY album_key, album, artist
+    ORDER BY latest DESC, album COLLATE NOCASE
+    LIMIT ? OFFSET ?
+  `);
+
+  const countAlbumsSearch = db.prepare(`
+    SELECT COUNT(*) as count
+    FROM (
+      SELECT album_key
+      FROM entries
+      WHERE root_id = ?
+        AND is_dir = 0
+        AND mime LIKE 'audio/%'
+        AND (album LIKE ? OR artist LIKE ?)
+      GROUP BY album_key
+    ) AS albums
+  `);
+
   const listAlbumsByPrefix = db.prepare(`
     SELECT album_key, album, artist, COUNT(*) as tracks, MAX(mtime) as latest
     FROM entries
@@ -369,6 +408,33 @@ function initDb(dbPath) {
         AND is_dir = 0
         AND mime LIKE 'audio/%'
         AND rel_path LIKE ?
+      GROUP BY album_key
+    ) AS albums
+  `);
+
+  const listAlbumsByPrefixSearch = db.prepare(`
+    SELECT album_key, album, artist, COUNT(*) as tracks, MAX(mtime) as latest
+    FROM entries
+    WHERE root_id = ?
+      AND is_dir = 0
+      AND mime LIKE 'audio/%'
+      AND rel_path LIKE ?
+      AND (album LIKE ? OR artist LIKE ?)
+    GROUP BY album_key, album, artist
+    ORDER BY latest DESC, album COLLATE NOCASE
+    LIMIT ? OFFSET ?
+  `);
+
+  const countAlbumsByPrefixSearch = db.prepare(`
+    SELECT COUNT(*) as count
+    FROM (
+      SELECT album_key
+      FROM entries
+      WHERE root_id = ?
+        AND is_dir = 0
+        AND mime LIKE 'audio/%'
+        AND rel_path LIKE ?
+        AND (album LIKE ? OR artist LIKE ?)
       GROUP BY album_key
     ) AS albums
   `);
@@ -396,6 +462,31 @@ function initDb(dbPath) {
     ) AS artists
   `);
 
+  const listArtistsSearch = db.prepare(`
+    SELECT artist, COUNT(*) as tracks, COUNT(DISTINCT album_key) as albums, MAX(mtime) as latest
+    FROM entries
+    WHERE root_id = ?
+      AND is_dir = 0
+      AND mime LIKE 'audio/%'
+      AND artist LIKE ?
+    GROUP BY artist
+    ORDER BY latest DESC, artist COLLATE NOCASE
+    LIMIT ? OFFSET ?
+  `);
+
+  const countArtistsSearch = db.prepare(`
+    SELECT COUNT(*) as count
+    FROM (
+      SELECT artist
+      FROM entries
+      WHERE root_id = ?
+        AND is_dir = 0
+        AND mime LIKE 'audio/%'
+        AND artist LIKE ?
+      GROUP BY artist
+    ) AS artists
+  `);
+
   const listArtistsByPrefix = db.prepare(`
     SELECT artist, COUNT(*) as tracks, COUNT(DISTINCT album_key) as albums, MAX(mtime) as latest
     FROM entries
@@ -417,6 +508,33 @@ function initDb(dbPath) {
         AND is_dir = 0
         AND mime LIKE 'audio/%'
         AND rel_path LIKE ?
+      GROUP BY artist
+    ) AS artists
+  `);
+
+  const listArtistsByPrefixSearch = db.prepare(`
+    SELECT artist, COUNT(*) as tracks, COUNT(DISTINCT album_key) as albums, MAX(mtime) as latest
+    FROM entries
+    WHERE root_id = ?
+      AND is_dir = 0
+      AND mime LIKE 'audio/%'
+      AND rel_path LIKE ?
+      AND artist LIKE ?
+    GROUP BY artist
+    ORDER BY latest DESC, artist COLLATE NOCASE
+    LIMIT ? OFFSET ?
+  `);
+
+  const countArtistsByPrefixSearch = db.prepare(`
+    SELECT COUNT(*) as count
+    FROM (
+      SELECT artist
+      FROM entries
+      WHERE root_id = ?
+        AND is_dir = 0
+        AND mime LIKE 'audio/%'
+        AND rel_path LIKE ?
+        AND artist LIKE ?
       GROUP BY artist
     ) AS artists
   `);
@@ -571,13 +689,21 @@ function initDb(dbPath) {
     searchMusicByPrefix,
     countSearchMusicByPrefix,
     listAlbums,
+    listAlbumsSearch,
     countAlbums,
+    countAlbumsSearch,
     listAlbumsByPrefix,
+    listAlbumsByPrefixSearch,
     countAlbumsByPrefix,
+    countAlbumsByPrefixSearch,
     listArtists,
+    listArtistsSearch,
     countArtists,
+    countArtistsSearch,
     listArtistsByPrefix,
+    listArtistsByPrefixSearch,
     countArtistsByPrefix,
+    countArtistsByPrefixSearch,
     listAlbumTracks,
     listAlbumTracksByPrefix,
     listArtistTracks,

@@ -1,8 +1,18 @@
+const crypto = require('crypto');
 const fs = require('fs');
 const mime = require('mime-types');
 const { sendError } = require('../lib/response');
 const { resolveMimeType, sendFileResponse } = require('../lib/fileResponse');
 const { safeAttachmentName } = require('../lib/paths');
+
+function albumKeyFor(artist, album) {
+  const safeArtist = artist || 'Unknown Artist';
+  const safeAlbum = album || 'Unknown Album';
+  return crypto
+    .createHash('sha1')
+    .update(`${safeArtist.toLowerCase()}::${safeAlbum.toLowerCase()}`)
+    .digest('hex');
+}
 
 function registerFileRoutes(fastify, ctx) {
   const { config, db, previewCachePath, ensurePreview, previewQueue, safeJoin, normalizeRelPath } =
@@ -97,7 +107,8 @@ function registerFileRoutes(fastify, ctx) {
 
   fastify.get('/api/album-art', async (request, reply) => {
     const rootId = request.query.root;
-    const albumKey = request.query.key;
+    const albumKey =
+      request.query.key || albumKeyFor(request.query.artist, request.query.album);
     const root = rootId === ctx.allRootsId ? true : config.roots.find((item) => item.id === rootId);
     if (!root || !albumKey) {
       return sendError(reply, 400, 'invalid_request', 'Invalid request');

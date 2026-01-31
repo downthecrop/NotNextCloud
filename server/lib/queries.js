@@ -298,18 +298,14 @@ function listMediaAllCursor({
 }
 
 function sanitizeFtsTerm(term) {
-  return (term || '')
-    .replace(/["'`^~:\\/]/g, ' ')
-    .replace(/[()]/g, ' ')
+  return String(term || '')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
     .trim();
 }
 
 function buildFtsQuery(query, fields) {
-  const terms = String(query || '')
-    .trim()
-    .split(/\s+/)
-    .map((term) => sanitizeFtsTerm(term))
-    .filter(Boolean);
+  const cleaned = sanitizeFtsTerm(query);
+  const terms = cleaned ? cleaned.split(/\s+/).filter(Boolean) : [];
   if (!terms.length) {
     return '';
   }
@@ -470,8 +466,8 @@ function searchAll({
     where = `${rootClause} AND (name LIKE ? OR title LIKE ? OR artist LIKE ? OR album LIKE ?) AND mime LIKE 'audio/%'${prefixClause}`;
     params = [...rootIds, like, like, like, like];
   } else {
-    where = `${rootClause} AND name LIKE ?${prefixClause}`;
-    params = [...rootIds, like];
+    where = `${rootClause} AND (name LIKE ? OR title LIKE ? OR artist LIKE ? OR album LIKE ?)${prefixClause}`;
+    params = [...rootIds, like, like, like, like];
   }
   if (prefixLike) {
     params.push(prefixLike);
@@ -526,8 +522,8 @@ function searchAllCursor({
     baseParams = [...rootIds, like, like, like, like];
     orderBy = 'ORDER BY mtime DESC, name COLLATE NOCASE, root_id, rel_path';
   } else {
-    baseWhere = `${rootClause} AND name LIKE ?${prefixClause}`;
-    baseParams = [...rootIds, like];
+    baseWhere = `${rootClause} AND (name LIKE ? OR title LIKE ? OR artist LIKE ? OR album LIKE ?)${prefixClause}`;
+    baseParams = [...rootIds, like, like, like, like];
   }
   if (prefixLike) {
     baseParams.push(prefixLike);
@@ -598,6 +594,42 @@ function listAlbumsAll({ db, rootIds, prefixLike, limit, offset }) {
   return { rows, total };
 }
 
+function listAlbumsAllSearch({ db, rootIds, prefixLike, limit, offset, like }) {
+  if (!rootIds.length) {
+    return { rows: [], total: 0 };
+  }
+  const placeholders = rootIds.map(() => '?').join(', ');
+  const rootClause = `root_id IN (${placeholders})`;
+  const prefixClause = prefixLike ? ' AND rel_path LIKE ?' : '';
+  const baseWhere = `${rootClause} AND is_dir = 0 AND mime LIKE 'audio/%'${prefixClause}`;
+  const params = [...rootIds];
+  if (prefixLike) {
+    params.push(prefixLike);
+  }
+  const dataSql = `
+    SELECT album_key, album, artist, COUNT(*) as tracks, MAX(mtime) as latest
+    FROM entries
+    WHERE ${baseWhere}
+      AND (album LIKE ? OR artist LIKE ?)
+    GROUP BY album_key, album, artist
+    ORDER BY latest DESC, album COLLATE NOCASE
+    LIMIT ? OFFSET ?
+  `;
+  const rows = db.prepare(dataSql).all(...params, like, like, limit, offset);
+  const countSql = `
+    SELECT COUNT(*) as count
+    FROM (
+      SELECT album_key
+      FROM entries
+      WHERE ${baseWhere}
+        AND (album LIKE ? OR artist LIKE ?)
+      GROUP BY album_key
+    ) AS albums
+  `;
+  const total = db.prepare(countSql).get(...params, like, like)?.count || 0;
+  return { rows, total };
+}
+
 function listArtistsAll({ db, rootIds, prefixLike, limit, offset }) {
   if (!rootIds.length) {
     return { rows: [], total: 0 };
@@ -629,6 +661,42 @@ function listArtistsAll({ db, rootIds, prefixLike, limit, offset }) {
     ) AS artists
   `;
   const total = db.prepare(countSql).get(...params)?.count || 0;
+  return { rows, total };
+}
+
+function listArtistsAllSearch({ db, rootIds, prefixLike, limit, offset, like }) {
+  if (!rootIds.length) {
+    return { rows: [], total: 0 };
+  }
+  const placeholders = rootIds.map(() => '?').join(', ');
+  const rootClause = `root_id IN (${placeholders})`;
+  const prefixClause = prefixLike ? ' AND rel_path LIKE ?' : '';
+  const baseWhere = `${rootClause} AND is_dir = 0 AND mime LIKE 'audio/%'${prefixClause}`;
+  const params = [...rootIds];
+  if (prefixLike) {
+    params.push(prefixLike);
+  }
+  const dataSql = `
+    SELECT artist, COUNT(*) as tracks, COUNT(DISTINCT album_key) as albums, MAX(mtime) as latest
+    FROM entries
+    WHERE ${baseWhere}
+      AND artist LIKE ?
+    GROUP BY artist
+    ORDER BY latest DESC, artist COLLATE NOCASE
+    LIMIT ? OFFSET ?
+  `;
+  const rows = db.prepare(dataSql).all(...params, like, limit, offset);
+  const countSql = `
+    SELECT COUNT(*) as count
+    FROM (
+      SELECT artist
+      FROM entries
+      WHERE ${baseWhere}
+        AND artist LIKE ?
+      GROUP BY artist
+    ) AS artists
+  `;
+  const total = db.prepare(countSql).get(...params, like)?.count || 0;
   return { rows, total };
 }
 
@@ -688,7 +756,9 @@ module.exports = {
   searchFtsAllCursor,
   buildFtsQuery,
   listAlbumsAll,
+  listAlbumsAllSearch,
   listArtistsAll,
+  listArtistsAllSearch,
   listAlbumTracksAll,
   listArtistTracksAll,
 };

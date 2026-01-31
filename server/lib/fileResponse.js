@@ -5,8 +5,8 @@ const mime = require('mime-types');
 function resolveMimeType(filePath, fallbackMime) {
   const resolved = fallbackMime || mime.lookup(filePath) || 'application/octet-stream';
   const ext = path.extname(filePath).toLowerCase();
-  if (resolved === 'application/octet-stream' && ext === '.opus') {
-    return 'audio/opus';
+  if (ext === '.opus') {
+    return 'audio/ogg; codecs=opus';
   }
   return resolved;
 }
@@ -32,6 +32,7 @@ function sendFileResponse({ reply, fullPath, stats, mimeType, rangeHeader, downl
     reply.header('Content-Disposition', `attachment; filename="${downloadName}"`);
   }
 
+  reply.header('Accept-Ranges', 'bytes');
   const range = parseRangeHeader(rangeHeader, stats.size);
   if (range) {
     const { start, end } = range;
@@ -42,12 +43,12 @@ function sendFileResponse({ reply, fullPath, stats, mimeType, rangeHeader, downl
     }
     reply.code(206);
     reply.header('Content-Range', `bytes ${start}-${end}/${stats.size}`);
-    reply.header('Accept-Ranges', 'bytes');
     reply.header('Content-Length', end - start + 1);
     reply.header('Content-Type', mimeType);
     return reply.send(fs.createReadStream(fullPath, { start, end }));
   }
 
+  reply.header('Content-Length', stats.size);
   reply.header('Content-Type', mimeType);
   return reply.send(fs.createReadStream(fullPath));
 }

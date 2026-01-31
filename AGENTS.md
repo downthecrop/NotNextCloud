@@ -127,9 +127,16 @@
 - Install dependencies: `npm install`
 - Make sure an Android emulator is running: `adb devices` (should show a device)
 - Run the app with the correct server URL:
-  - For emulator: `EXPO_PUBLIC_API_URL=http://10.0.2.2:4170 npm run android`
-  - For physical device: `EXPO_PUBLIC_API_URL=http://YOUR_HOST_IP:4170 npm run android`
+  - Emulator: `EXPO_PUBLIC_API_URL=http://10.0.2.2:4170 npm run android`
+  - Physical device: `EXPO_PUBLIC_API_URL=http://YOUR_HOST_IP:4170 npm run android`
+- Start Metro (dev client):
+  - Emulator: `EXPO_PUBLIC_API_URL=http://10.0.2.2:4170 npx expo start --dev-client`
+  - Physical device: `EXPO_PUBLIC_API_URL=http://YOUR_HOST_IP:4170 npx expo start --dev-client`
 - The app will connect to the server running in the Docker container
+
+### Android Debugging Notes (Session Learnings)
+- If you see `development server returned response error code: 500`, the Metro bundler is often missing a native module. Ensure `react-native-gesture-handler` is installed (`npm install react-native-gesture-handler`) and that the app imports `react-native-gesture-handler` at the top of `clients/android/app/_layout.tsx`.
+- When using gesture handler, the app root must be wrapped in `GestureHandlerRootView` (done in `clients/android/app/_layout.tsx`).
 
 ### Workflow Note
 - After any code change, reboot Docker (`docker compose up -d --build`) before sending the final response. Do not send the final response until the Docker restart attempt has been made.

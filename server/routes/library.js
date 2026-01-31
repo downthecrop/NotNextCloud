@@ -20,7 +20,9 @@ const {
   searchFtsAllCursor,
   buildFtsQuery,
   listAlbumsAll,
+  listAlbumsAllSearch,
   listArtistsAll,
+  listArtistsAllSearch,
   listAlbumTracksAll,
   listArtistTracksAll,
 } = require('../lib/queries');
@@ -313,7 +315,8 @@ function registerLibraryRoutes(fastify, ctx) {
     const prefixLike = makePrefixLike(request.query.pathPrefix);
     let rows = [];
     let total = includeTotal ? 0 : null;
-    const ftsFields = type === 'music' ? ['name', 'title', 'artist', 'album'] : ['name'];
+    const ftsFields =
+      type === 'music' || type === 'all' ? ['name', 'title', 'artist', 'album'] : ['name'];
     const ftsQuery = db.ftsEnabled ? buildFtsQuery(query, ftsFields) : '';
     const useFts = Boolean(ftsQuery);
     let nextCursor = null;
@@ -420,9 +423,9 @@ function registerLibraryRoutes(fastify, ctx) {
         }
       }
     } else {
-      rows = db.searchByName.all(rootId, like, limit, offset);
+      rows = db.searchByName.all(rootId, like, like, like, like, limit, offset);
       if (includeTotal) {
-        total = db.countSearch.get(rootId, like)?.count || 0;
+        total = db.countSearch.get(rootId, like, like, like, like)?.count || 0;
       }
     }
     const items = toEntryList(rows);
@@ -524,21 +527,41 @@ function registerLibraryRoutes(fastify, ctx) {
     if (!scope) {
       return sendError(reply, 400, 'invalid_root', 'Invalid root');
     }
+    const query = (request.query.q || '').trim();
+    const like = query ? `%${query}%` : null;
     const { limit, offset } = parsePagination(request.query);
     const prefixLike = makePrefixLike(request.query.pathPrefix);
     let rows = [];
     let total = 0;
     if (scope.isAll) {
-      const results = listAlbumsAll({ db: db.db, rootIds: scope.rootIds, prefixLike, limit, offset });
+      const results = like
+        ? listAlbumsAllSearch({
+            db: db.db,
+            rootIds: scope.rootIds,
+            prefixLike,
+            limit,
+            offset,
+            like,
+          })
+        : listAlbumsAll({ db: db.db, rootIds: scope.rootIds, prefixLike, limit, offset });
       rows = results.rows;
       total = results.total;
     } else {
-      rows = prefixLike
-        ? db.listAlbumsByPrefix.all(rootId, prefixLike, limit, offset)
-        : db.listAlbums.all(rootId, limit, offset);
-      total = prefixLike
-        ? db.countAlbumsByPrefix.get(rootId, prefixLike)?.count || 0
-        : db.countAlbums.get(rootId)?.count || 0;
+      if (like) {
+        rows = prefixLike
+          ? db.listAlbumsByPrefixSearch.all(rootId, prefixLike, like, like, limit, offset)
+          : db.listAlbumsSearch.all(rootId, like, like, limit, offset);
+        total = prefixLike
+          ? db.countAlbumsByPrefixSearch.get(rootId, prefixLike, like, like)?.count || 0
+          : db.countAlbumsSearch.get(rootId, like, like)?.count || 0;
+      } else {
+        rows = prefixLike
+          ? db.listAlbumsByPrefix.all(rootId, prefixLike, limit, offset)
+          : db.listAlbums.all(rootId, limit, offset);
+        total = prefixLike
+          ? db.countAlbumsByPrefix.get(rootId, prefixLike)?.count || 0
+          : db.countAlbums.get(rootId)?.count || 0;
+      }
     }
     const items = rows.map((row) => {
       const art = row.album_key ? db.getAlbumArt.get(row.album_key) : null;
@@ -560,21 +583,41 @@ function registerLibraryRoutes(fastify, ctx) {
     if (!scope) {
       return sendError(reply, 400, 'invalid_root', 'Invalid root');
     }
+    const query = (request.query.q || '').trim();
+    const like = query ? `%${query}%` : null;
     const { limit, offset } = parsePagination(request.query);
     const prefixLike = makePrefixLike(request.query.pathPrefix);
     let rows = [];
     let total = 0;
     if (scope.isAll) {
-      const results = listArtistsAll({ db: db.db, rootIds: scope.rootIds, prefixLike, limit, offset });
+      const results = like
+        ? listArtistsAllSearch({
+            db: db.db,
+            rootIds: scope.rootIds,
+            prefixLike,
+            limit,
+            offset,
+            like,
+          })
+        : listArtistsAll({ db: db.db, rootIds: scope.rootIds, prefixLike, limit, offset });
       rows = results.rows;
       total = results.total;
     } else {
-      rows = prefixLike
-        ? db.listArtistsByPrefix.all(rootId, prefixLike, limit, offset)
-        : db.listArtists.all(rootId, limit, offset);
-      total = prefixLike
-        ? db.countArtistsByPrefix.get(rootId, prefixLike)?.count || 0
-        : db.countArtists.get(rootId)?.count || 0;
+      if (like) {
+        rows = prefixLike
+          ? db.listArtistsByPrefixSearch.all(rootId, prefixLike, like, limit, offset)
+          : db.listArtistsSearch.all(rootId, like, limit, offset);
+        total = prefixLike
+          ? db.countArtistsByPrefixSearch.get(rootId, prefixLike, like)?.count || 0
+          : db.countArtistsSearch.get(rootId, like)?.count || 0;
+      } else {
+        rows = prefixLike
+          ? db.listArtistsByPrefix.all(rootId, prefixLike, limit, offset)
+          : db.listArtists.all(rootId, limit, offset);
+        total = prefixLike
+          ? db.countArtistsByPrefix.get(rootId, prefixLike)?.count || 0
+          : db.countArtists.get(rootId)?.count || 0;
+      }
     }
     const items = rows.map((row) => ({
       artist: row.artist || 'Unknown Artist',
