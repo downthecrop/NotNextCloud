@@ -137,6 +137,7 @@
 ### Android Debugging Notes (Session Learnings)
 - If you see `development server returned response error code: 500`, the Metro bundler is often missing a native module. Ensure `react-native-gesture-handler` is installed (`npm install react-native-gesture-handler`) and that the app imports `react-native-gesture-handler` at the top of `clients/android/app/_layout.tsx`.
 - When using gesture handler, the app root must be wrapped in `GestureHandlerRootView` (done in `clients/android/app/_layout.tsx`).
+- If the app "crashes instantly" with repeated `ReactNativeJNI ... Failed to connect to /10.0.2.2:8081`, Metro is not reachable (not a native crash). Start Metro in a separate terminal and keep it running: `EXPO_PUBLIC_API_URL=http://10.0.2.2:4170 npx expo start --dev-client --clear`, then relaunch the app (`adb shell monkey -p com.brycematthes.android 1` or `npm run android`).
 
 ### Workflow Note
 - After any code change, reboot Docker (`docker compose up -d --build`) before sending the final response. Do not send the final response until the Docker restart attempt has been made.
