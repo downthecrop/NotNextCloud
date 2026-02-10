@@ -1,5 +1,6 @@
 data/
 test-data/
 t2/
-web/node_modules/
+clients/web/node_modules/
+clients/web/dist/
 .DS_Store

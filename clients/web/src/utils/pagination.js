@@ -9,7 +9,14 @@ export async function loadPaged({
   errorMessage,
   onReset,
   fetchPage,
+  requestVersion,
 }) {
+  const callVersion = requestVersion ? requestVersion.value + 1 : null;
+  if (requestVersion) {
+    requestVersion.value = callVersion;
+  }
+  const isStale = () => requestVersion && requestVersion.value !== callVersion;
+
   if (reset) {
     items.value = [];
     total.value = 0;
@@ -31,6 +38,9 @@ export async function loadPaged({
     const pageOffset = reset ? 0 : offset?.value || 0;
     const pageCursor = reset ? null : cursor?.value || null;
     const result = await fetchPage({ offset: pageOffset, cursor: pageCursor });
+    if (isStale()) {
+      return { ok: false, stale: true };
+    }
     if (!result?.ok) {
       if (error && errorMessage) {
         error.value = errorMessage;
@@ -53,12 +63,15 @@ export async function loadPaged({
     }
     return { ok: true, items: newItems, data };
   } catch (err) {
+    if (isStale()) {
+      return { ok: false, stale: true };
+    }
     if (error && errorMessage) {
       error.value = errorMessage;
     }
     return { ok: false };
   } finally {
-    if (loading) {
+    if (loading && !isStale()) {
       loading.value = false;
     }
   }

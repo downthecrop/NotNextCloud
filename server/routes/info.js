@@ -47,6 +47,7 @@ function registerInfoRoutes(fastify, ctx) {
         },
         indexing: {
           scanBatchSize: config.scanBatchSize || 0,
+          scanFsConcurrency: config.scanFsConcurrency || 8,
           fastScan: Boolean(config.fastScan),
         },
         upload: {

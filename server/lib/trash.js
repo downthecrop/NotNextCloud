@@ -2,12 +2,22 @@ const path = require('path');
 const crypto = require('crypto');
 const fs = require('fs');
 
+function safeRootTrashSegment(rootId) {
+  const raw = String(rootId || '').trim();
+  const normalized = raw.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
+  if (normalized && normalized !== '.' && normalized !== '..') {
+    return normalized;
+  }
+  const suffix = crypto.createHash('sha1').update(raw || 'root').digest('hex').slice(0, 12);
+  return `root-${suffix}`;
+}
+
 function trashRelName(rootId, relPath) {
   const base = path.basename(relPath || '') || 'item';
   const safeBase = base.replace(/[^\w.\-() ]+/g, '_');
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const nonce = crypto.randomBytes(3).toString('hex');
-  return path.join(rootId, `${stamp}-${nonce}-${safeBase}`);
+  return path.join(safeRootTrashSegment(rootId), `${stamp}-${nonce}-${safeBase}`);
 }
 
 async function movePath(sourcePath, targetPath, isDir) {

@@ -207,7 +207,7 @@ Trigger a scan.
 
 Body:
 ```
-{ "root": "rootId", "path": "", "mode": "incremental|fast|full|rehash" }
+{ "root": "rootId", "path": "", "mode": "incremental|fast|full" }
 ```
 
 ### `GET /api/status`

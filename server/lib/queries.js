@@ -1,3 +1,19 @@
+const statementCache = new WeakMap();
+
+function prepareCached(db, sql) {
+  let cache = statementCache.get(db);
+  if (!cache) {
+    cache = new Map();
+    statementCache.set(db, cache);
+  }
+  let stmt = cache.get(sql);
+  if (!stmt) {
+    stmt = db.prepare(sql);
+    cache.set(sql, stmt);
+  }
+  return stmt;
+}
+
 function listMediaAll({ db, entrySelect, rootIds, type, prefixLike, limit, offset, includeTotal }) {
   if (!rootIds.length) {
     return { rows: [], total: includeTotal === false ? null : 0 };
@@ -16,7 +32,7 @@ function listMediaAll({ db, entrySelect, rootIds, type, prefixLike, limit, offse
   let total = 0;
   if (includeTotal !== false) {
     const countSql = `SELECT COUNT(*) as count FROM entries WHERE ${baseWhere}`;
-    total = db.prepare(countSql).get(...params)?.count || 0;
+    total = prepareCached(db, countSql).get(...params)?.count || 0;
   } else {
     total = null;
   }
@@ -26,7 +42,7 @@ function listMediaAll({ db, entrySelect, rootIds, type, prefixLike, limit, offse
     ORDER BY mtime DESC, name COLLATE NOCASE
     LIMIT ? OFFSET ?
   `;
-  const rows = db.prepare(dataSql).all(...params, limit, offset);
+  const rows = prepareCached(db, dataSql).all(...params, limit, offset);
   return { rows, total };
 }
 
@@ -100,7 +116,7 @@ function listChildrenCursor({ db, entrySelect, rootId, parent, limit, cursor }) 
     ${orderBy}
     LIMIT ?
   `;
-  return db.prepare(sql).all(...params, limit);
+  return prepareCached(db, sql).all(...params, limit);
 }
 
 function listChildrenAll({ db, entrySelect, rootIds, parent, limit, offset, includeTotal }) {
@@ -113,7 +129,7 @@ function listChildrenAll({ db, entrySelect, rootIds, parent, limit, offset, incl
   let total = 0;
   if (includeTotal !== false) {
     const countSql = `SELECT COUNT(*) as count FROM entries WHERE ${baseWhere}`;
-    total = db.prepare(countSql).get(...params)?.count || 0;
+    total = prepareCached(db, countSql).get(...params)?.count || 0;
   } else {
     total = null;
   }
@@ -123,7 +139,7 @@ function listChildrenAll({ db, entrySelect, rootIds, parent, limit, offset, incl
     ORDER BY is_dir DESC, name COLLATE NOCASE, root_id, rel_path
     LIMIT ? OFFSET ?
   `;
-  const rows = db.prepare(dataSql).all(...params, limit, offset);
+  const rows = prepareCached(db, dataSql).all(...params, limit, offset);
   return { rows, total };
 }
 
@@ -150,7 +166,7 @@ function listChildrenAllRaw({
   let total = 0;
   if (includeTotal !== false) {
     const countSql = `SELECT COUNT(*) as count FROM entries WHERE ${baseWhere}`;
-    total = db.prepare(countSql).get(...params)?.count || 0;
+    total = prepareCached(db, countSql).get(...params)?.count || 0;
   } else {
     total = null;
   }
@@ -160,7 +176,7 @@ function listChildrenAllRaw({
     ORDER BY id
     LIMIT ? OFFSET ?
   `;
-  const rows = db.prepare(dataSql).all(...params, limit, offset);
+  const rows = prepareCached(db, dataSql).all(...params, limit, offset);
   return { rows, total };
 }
 
@@ -187,7 +203,7 @@ function listChildrenAllRawCursor({
   let total = 0;
   if (includeTotal !== false) {
     const countSql = `SELECT COUNT(*) as count FROM entries WHERE ${baseWhere}`;
-    total = db.prepare(countSql).get(...baseParams)?.count || 0;
+    total = prepareCached(db, countSql).get(...baseParams)?.count || 0;
   } else {
     total = null;
   }
@@ -197,7 +213,7 @@ function listChildrenAllRawCursor({
     ORDER BY id
     LIMIT ?
   `;
-  const rows = db.prepare(dataSql).all(...baseParams, cursor.id, limit);
+  const rows = prepareCached(db, dataSql).all(...baseParams, cursor.id, limit);
   return { rows, total };
 }
 
@@ -214,7 +230,7 @@ function getMaxIdAll({ db, rootIds, parent }) {
   }
   const placeholders = rootIds.map(() => '?').join(', ');
   const sql = `SELECT MAX(id) as maxId FROM entries WHERE root_id IN (${placeholders}) AND parent = ?`;
-  const row = db.prepare(sql).get(...rootIds, parent);
+  const row = prepareCached(db, sql).get(...rootIds, parent);
   return Number(row?.maxId) || 0;
 }
 
@@ -228,7 +244,7 @@ function listChildrenAllCursor({ db, entrySelect, rootIds, parent, limit, cursor
   let total = 0;
   if (includeTotal !== false) {
     const countSql = `SELECT COUNT(*) as count FROM entries WHERE ${baseWhere}`;
-    total = db.prepare(countSql).get(...baseParams)?.count || 0;
+    total = prepareCached(db, countSql).get(...baseParams)?.count || 0;
   } else {
     total = null;
   }
@@ -245,7 +261,7 @@ function listChildrenAllCursor({ db, entrySelect, rootIds, parent, limit, cursor
     ORDER BY is_dir DESC, name COLLATE NOCASE, root_id, rel_path
     LIMIT ?
   `;
-  const rows = db.prepare(dataSql).all(...dataParams, limit);
+  const rows = prepareCached(db, dataSql).all(...dataParams, limit);
   return { rows, total };
 }
 
@@ -276,7 +292,7 @@ function listMediaAllCursor({
   let total = 0;
   if (includeTotal !== false) {
     const countSql = `SELECT COUNT(*) as count FROM entries WHERE ${baseWhere}`;
-    total = db.prepare(countSql).get(...baseParams)?.count || 0;
+    total = prepareCached(db, countSql).get(...baseParams)?.count || 0;
   } else {
     total = null;
   }
@@ -293,7 +309,7 @@ function listMediaAllCursor({
     ORDER BY mtime DESC, name COLLATE NOCASE, root_id, rel_path
     LIMIT ?
   `;
-  const rows = db.prepare(dataSql).all(...dataParams, limit);
+  const rows = prepareCached(db, dataSql).all(...dataParams, limit);
   return { rows, total };
 }
 
@@ -356,7 +372,7 @@ function searchFtsAll({
   let total = 0;
   if (includeTotal !== false) {
     const countSql = `SELECT COUNT(*) as count ${join} WHERE ${where}`;
-    total = db.prepare(countSql).get(...params)?.count || 0;
+    total = prepareCached(db, countSql).get(...params)?.count || 0;
   } else {
     total = null;
   }
@@ -367,7 +383,7 @@ function searchFtsAll({
     ${orderBy}
     LIMIT ? OFFSET ?
   `;
-  const rows = db.prepare(dataSql).all(...params, limit, offset);
+  const rows = prepareCached(db, dataSql).all(...params, limit, offset);
   return { rows, total };
 }
 
@@ -408,7 +424,7 @@ function searchFtsAllCursor({
   let total = 0;
   if (includeTotal !== false) {
     const countSql = `SELECT COUNT(*) as count ${join} WHERE ${baseWhere}`;
-    total = db.prepare(countSql).get(...baseParams)?.count || 0;
+    total = prepareCached(db, countSql).get(...baseParams)?.count || 0;
   } else {
     total = null;
   }
@@ -436,7 +452,7 @@ function searchFtsAllCursor({
     ${orderBy}
     LIMIT ?
   `;
-  const rows = db.prepare(dataSql).all(...dataParams, limit);
+  const rows = prepareCached(db, dataSql).all(...dataParams, limit);
   return { rows, total };
 }
 
@@ -475,7 +491,7 @@ function searchAll({
   let total = 0;
   if (includeTotal !== false) {
     const countSql = `SELECT COUNT(*) as count FROM entries WHERE ${where}`;
-    total = db.prepare(countSql).get(...params)?.count || 0;
+    total = prepareCached(db, countSql).get(...params)?.count || 0;
   } else {
     total = null;
   }
@@ -489,7 +505,7 @@ function searchAll({
     ${orderBy}
     LIMIT ? OFFSET ?
   `;
-  const rows = db.prepare(dataSql).all(...params, limit, offset);
+  const rows = prepareCached(db, dataSql).all(...params, limit, offset);
   return { rows, total };
 }
 
@@ -531,7 +547,7 @@ function searchAllCursor({
   let total = 0;
   if (includeTotal !== false) {
     const countSql = `SELECT COUNT(*) as count FROM entries WHERE ${baseWhere}`;
-    total = db.prepare(countSql).get(...baseParams)?.count || 0;
+    total = prepareCached(db, countSql).get(...baseParams)?.count || 0;
   } else {
     total = null;
   }
@@ -556,7 +572,7 @@ function searchAllCursor({
     ${orderBy}
     LIMIT ?
   `;
-  const rows = db.prepare(dataSql).all(...dataParams, limit);
+  const rows = prepareCached(db, dataSql).all(...dataParams, limit);
   return { rows, total };
 }
 
@@ -580,7 +596,7 @@ function listAlbumsAll({ db, rootIds, prefixLike, limit, offset }) {
     ORDER BY latest DESC, album COLLATE NOCASE
     LIMIT ? OFFSET ?
   `;
-  const rows = db.prepare(dataSql).all(...params, limit, offset);
+  const rows = prepareCached(db, dataSql).all(...params, limit, offset);
   const countSql = `
     SELECT COUNT(*) as count
     FROM (
@@ -590,7 +606,7 @@ function listAlbumsAll({ db, rootIds, prefixLike, limit, offset }) {
       GROUP BY album_key
     ) AS albums
   `;
-  const total = db.prepare(countSql).get(...params)?.count || 0;
+  const total = prepareCached(db, countSql).get(...params)?.count || 0;
   return { rows, total };
 }
 
@@ -615,7 +631,7 @@ function listAlbumsAllSearch({ db, rootIds, prefixLike, limit, offset, like }) {
     ORDER BY latest DESC, album COLLATE NOCASE
     LIMIT ? OFFSET ?
   `;
-  const rows = db.prepare(dataSql).all(...params, like, like, limit, offset);
+  const rows = prepareCached(db, dataSql).all(...params, like, like, limit, offset);
   const countSql = `
     SELECT COUNT(*) as count
     FROM (
@@ -626,7 +642,7 @@ function listAlbumsAllSearch({ db, rootIds, prefixLike, limit, offset, like }) {
       GROUP BY album_key
     ) AS albums
   `;
-  const total = db.prepare(countSql).get(...params, like, like)?.count || 0;
+  const total = prepareCached(db, countSql).get(...params, like, like)?.count || 0;
   return { rows, total };
 }
 
@@ -650,7 +666,7 @@ function listArtistsAll({ db, rootIds, prefixLike, limit, offset }) {
     ORDER BY latest DESC, artist COLLATE NOCASE
     LIMIT ? OFFSET ?
   `;
-  const rows = db.prepare(dataSql).all(...params, limit, offset);
+  const rows = prepareCached(db, dataSql).all(...params, limit, offset);
   const countSql = `
     SELECT COUNT(*) as count
     FROM (
@@ -660,7 +676,7 @@ function listArtistsAll({ db, rootIds, prefixLike, limit, offset }) {
       GROUP BY artist
     ) AS artists
   `;
-  const total = db.prepare(countSql).get(...params)?.count || 0;
+  const total = prepareCached(db, countSql).get(...params)?.count || 0;
   return { rows, total };
 }
 
@@ -685,7 +701,7 @@ function listArtistsAllSearch({ db, rootIds, prefixLike, limit, offset, like }) 
     ORDER BY latest DESC, artist COLLATE NOCASE
     LIMIT ? OFFSET ?
   `;
-  const rows = db.prepare(dataSql).all(...params, like, limit, offset);
+  const rows = prepareCached(db, dataSql).all(...params, like, limit, offset);
   const countSql = `
     SELECT COUNT(*) as count
     FROM (
@@ -696,7 +712,7 @@ function listArtistsAllSearch({ db, rootIds, prefixLike, limit, offset, like }) 
       GROUP BY artist
     ) AS artists
   `;
-  const total = db.prepare(countSql).get(...params, like)?.count || 0;
+  const total = prepareCached(db, countSql).get(...params, like)?.count || 0;
   return { rows, total };
 }
 
@@ -717,7 +733,7 @@ function listAlbumTracksAll({ db, entrySelect, rootIds, albumKey, prefixLike }) 
     WHERE ${baseWhere}
     ORDER BY name COLLATE NOCASE
   `;
-  return db.prepare(sql).all(...params);
+  return prepareCached(db, sql).all(...params);
 }
 
 function listArtistTracksAll({ db, entrySelect, rootIds, artist, prefixLike }) {
@@ -737,7 +753,7 @@ function listArtistTracksAll({ db, entrySelect, rootIds, artist, prefixLike }) {
     WHERE ${baseWhere}
     ORDER BY album COLLATE NOCASE, name COLLATE NOCASE
   `;
-  return db.prepare(sql).all(...params);
+  return prepareCached(db, sql).all(...params);
 }
 
 module.exports = {

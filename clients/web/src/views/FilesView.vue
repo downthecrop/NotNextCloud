@@ -105,6 +105,7 @@ const trashTotal = ref(0);
 const trashOffset = ref(0);
 const needsFilesRefresh = ref(false);
 const dragDepth = ref(0);
+const requestVersion = ref(0);
 const {
   menu: breadcrumbMenu,
   openMenu: openBreadcrumbMenuBase,
@@ -287,16 +288,6 @@ async function scheduleScan(mode, pathValue) {
 
 async function refreshPath(pathValue) {
   await scheduleScan('full', pathValue);
-  if (isSearchMode.value) {
-    await runSearch({ reset: true });
-  } else {
-    await loadList({ reset: true });
-  }
-  closeBreadcrumbMenu();
-}
-
-async function forceRehashPath(pathValue) {
-  await scheduleScan('rehash', pathValue);
   if (isSearchMode.value) {
     await runSearch({ reset: true });
   } else {
@@ -724,6 +715,7 @@ async function loadList({ reset = true } = {}) {
     error,
     errorMessage: 'Failed to load directory',
     onReset: clearSelection,
+    requestVersion,
     fetchPage: ({ offset: pageOffset, cursor: pageCursor }) =>
       listDirectory({
         rootId: props.currentRoot.id,
@@ -750,6 +742,7 @@ async function loadTrash({ reset = true } = {}) {
     error,
     errorMessage: 'Failed to load trash',
     onReset: clearSelection,
+    requestVersion,
     fetchPage: ({ offset: pageOffset }) =>
       listTrash({ rootId: ALL_ROOTS_ID, limit: props.pageSize, offset: pageOffset }),
   });
@@ -779,6 +772,7 @@ async function runSearch({ reset = true } = {}) {
     cursor: searchCursor,
     loading,
     onReset: clearSelection,
+    requestVersion,
     fetchPage: ({ offset: pageOffset, cursor: pageCursor }) =>
       searchEntries({
         rootId: targetRootId,
@@ -1550,10 +1544,6 @@ function handleKey(event) {
     <button class="context-menu-item" @click="refreshPath(breadcrumbMenu.path)">
       <i class="fa-solid fa-rotate-right"></i>
       Refresh this folder
-    </button>
-    <button class="context-menu-item" @click="forceRehashPath(breadcrumbMenu.path)">
-      <i class="fa-solid fa-bolt"></i>
-      Force full rehash
     </button>
   </div>
 

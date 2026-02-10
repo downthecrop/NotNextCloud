@@ -8,10 +8,9 @@ function registerScanRoutes(fastify, ctx) {
     const mode = (request.body?.mode || request.query?.mode || 'incremental').toLowerCase();
     const rootId = request.body?.root || request.query?.root || '';
     const relPath = normalizeRelPath(request.body?.path || request.query?.path || '');
-    const forceHash = mode === 'rehash';
     const fastScan = mode === 'fast' || (mode === 'incremental' && config.fastScan);
     const fullScan = mode === 'full';
-    const scanOptions = { forceHash, fastScan: forceHash ? false : fullScan ? false : fastScan };
+    const scanOptions = { fastScan: fullScan ? false : fastScan };
     if (rootId) {
       const root = config.roots.find((item) => item.id === rootId);
       if (!root) {
@@ -45,6 +44,7 @@ function registerScanRoutes(fastify, ctx) {
     return sendOk({
       scanIntervalSeconds: config.scanIntervalSeconds || 60,
       fastScan: Boolean(config.fastScan),
+      scanFsConcurrency: config.scanFsConcurrency || 8,
       fullScanIntervalHours: Number(config.fullScanIntervalHours || 0),
     });
   });
@@ -52,6 +52,7 @@ function registerScanRoutes(fastify, ctx) {
   fastify.put('/api/scan/settings', async (request, reply) => {
     const scanIntervalSeconds = Math.max(10, parseInt(request.body?.scanIntervalSeconds, 10) || 60);
     const fastScan = request.body?.fastScan !== false;
+    const scanFsConcurrency = Math.max(1, parseInt(request.body?.scanFsConcurrency, 10) || 8);
     const fullScanIntervalHours = Math.max(
       0,
       parseInt(request.body?.fullScanIntervalHours, 10) || 0
@@ -60,6 +61,7 @@ function registerScanRoutes(fastify, ctx) {
       const nextConfig = ctx.readConfigFile();
       nextConfig.scanIntervalSeconds = scanIntervalSeconds;
       nextConfig.fastScan = fastScan;
+      nextConfig.scanFsConcurrency = scanFsConcurrency;
       nextConfig.fullScanIntervalHours = fullScanIntervalHours;
       ctx.writeConfigFile(nextConfig);
       const reloaded = ctx.loadConfig(ctx.projectRoot);

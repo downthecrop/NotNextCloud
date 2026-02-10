@@ -61,11 +61,12 @@ function loadConfig(projectRoot) {
     scanIntervalSeconds: config.scanIntervalSeconds || 60,
     fastScan: Boolean(config.fastScan),
     scanBatchSize: Number.isFinite(config.scanBatchSize) ? Math.max(1, config.scanBatchSize) : 500,
+    scanFsConcurrency: Number.isFinite(config.scanFsConcurrency)
+      ? Math.max(1, config.scanFsConcurrency)
+      : 8,
     fullScanIntervalHours: Number.isFinite(config.fullScanIntervalHours)
       ? config.fullScanIntervalHours
       : 0,
-    hashAlgorithm: typeof config.hashAlgorithm === 'string' ? config.hashAlgorithm : 'sha256',
-    hashFiles: config.hashFiles !== false,
     devMode: Boolean(config.devMode),
     uploadEnabled: config.uploadEnabled !== false,
     uploadMaxBytes: Number.isFinite(config.uploadMaxBytes) ? config.uploadMaxBytes : 0,

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, provide, onMounted, watch } from 'vue';
+import { ref, computed, provide, onMounted, onUnmounted, watch } from 'vue';
 import LoginView from './components/LoginView.vue';
 import SettingsModal from './components/SettingsModal.vue';
 import FilesView from './views/FilesView.vue';
@@ -30,8 +30,20 @@ const status = ref({
   scanInProgress: false,
   scanIntervalSeconds: 0,
   fastScan: true,
+  scanFsConcurrency: 8,
   fullScanIntervalHours: 0,
+  scanErrorCount: 0,
+  scanErrors: [],
 });
+const scanToast = ref({
+  visible: false,
+  title: '',
+  message: '',
+  detail: '',
+});
+let scanToastTimer = null;
+let scanErrorsInitialized = false;
+const seenScanErrorIds = new Set();
 const allRoot = computed(() => ({ id: ALL_ROOTS_ID, name: 'All' }));
 const fileRoots = computed(() => (roots.value.length ? [allRoot.value, ...roots.value] : []));
 const mediaRoot = computed(() => (currentView.value === 'files' ? currentRoot.value : allRoot.value));
@@ -98,7 +110,7 @@ async function loadStatus() {
   if (!result.ok) {
     return;
   }
-  status.value = result.data;
+  applyStatus(result.data);
 }
 
 async function loadInfo() {
@@ -118,7 +130,7 @@ async function updateScanSettings(nextSettings) {
     const message = result.error?.message || 'Failed to update scan settings.';
     return { ok: false, error: message };
   }
-  status.value = result.data;
+  applyStatus(result.data);
   return { ok: true };
 }
 async function loadRoots() {
@@ -131,7 +143,7 @@ async function loadRoots() {
   }
   const data = result.data || {};
   roots.value = data.roots || [];
-  status.value = data.status || status.value;
+  applyStatus(data.status || status.value, { notifyScanErrors: false });
   apiInfo.value = data.info || apiInfo.value;
   const preferredRoot = filesNav.value?.rootId
     ? roots.value.find((root) => root.id === filesNav.value.rootId)
@@ -288,7 +300,7 @@ function updateMusicNav(next) {
 async function rescan(scope) {
   const result = await apiJson(apiUrls.scan({ scope }), { method: 'POST' });
   if (result.ok) {
-    status.value = result.data?.status || status.value;
+    applyStatus(result.data?.status || status.value);
   }
 }
 
@@ -319,6 +331,79 @@ function startStatusPolling() {
       loadStatus();
     }
   }, 5000);
+}
+
+function rememberScanErrorId(id) {
+  if (!id) {
+    return;
+  }
+  if (seenScanErrorIds.size > 1000) {
+    seenScanErrorIds.clear();
+  }
+  seenScanErrorIds.add(id);
+}
+
+function showScanErrorToast(errorEntry) {
+  if (!errorEntry) {
+    return;
+  }
+  const code = errorEntry.code || 'UNKNOWN';
+  const tooManyFiles = code === 'EMFILE' || code === 'ENFILE';
+  const location =
+    errorEntry.relPath ||
+    errorEntry.fullPath ||
+    errorEntry.rootName ||
+    errorEntry.rootId ||
+    '';
+  scanToast.value = {
+    visible: true,
+    title: tooManyFiles ? 'Indexing hit file-handle limits' : `Indexing error (${code})`,
+    message: tooManyFiles
+      ? 'Too many files are open while scanning this storage. Index results may be incomplete.'
+      : errorEntry.message || 'An indexing error occurred.',
+    detail: location ? `Path: ${location}` : '',
+  };
+  if (scanToastTimer) {
+    clearTimeout(scanToastTimer);
+  }
+  scanToastTimer = setTimeout(() => {
+    scanToast.value.visible = false;
+    scanToastTimer = null;
+  }, 9000);
+}
+
+function ingestScanErrors(nextStatus, { notifyScanErrors = true } = {}) {
+  const errors = Array.isArray(nextStatus?.scanErrors) ? nextStatus.scanErrors : [];
+  if (!scanErrorsInitialized) {
+    for (const error of errors) {
+      rememberScanErrorId(error?.id);
+    }
+    scanErrorsInitialized = true;
+    return;
+  }
+  let newestUnseen = null;
+  for (const error of errors) {
+    if (!error?.id || seenScanErrorIds.has(error.id)) {
+      continue;
+    }
+    newestUnseen = error;
+    rememberScanErrorId(error.id);
+  }
+  if (notifyScanErrors && newestUnseen) {
+    showScanErrorToast(newestUnseen);
+  }
+}
+
+function applyStatus(nextStatus, options = {}) {
+  if (!nextStatus || typeof nextStatus !== 'object') {
+    return;
+  }
+  ingestScanErrors(nextStatus, options);
+  status.value = nextStatus;
+}
+
+function dismissScanToast() {
+  scanToast.value.visible = false;
 }
 
 watch(
@@ -364,6 +449,18 @@ onMounted(() => {
     });
   applyHash();
   window.addEventListener('hashchange', applyHash);
+});
+
+onUnmounted(() => {
+  if (statusTimer) {
+    clearInterval(statusTimer);
+    statusTimer = null;
+  }
+  if (scanToastTimer) {
+    clearTimeout(scanToastTimer);
+    scanToastTimer = null;
+  }
+  window.removeEventListener('hashchange', applyHash);
 });
 
 watch(
@@ -476,5 +573,16 @@ watch(
       :on-rescan-music="() => rescan('music')"
       :on-rebuild-thumbs="rebuildThumbs"
     />
+
+    <div v-if="scanToast.visible" class="app-toast-stack" role="status" aria-live="polite">
+      <div class="app-toast">
+        <div class="app-toast-title">{{ scanToast.title }}</div>
+        <div class="app-toast-message">{{ scanToast.message }}</div>
+        <div v-if="scanToast.detail" class="app-toast-meta">{{ scanToast.detail }}</div>
+        <button class="app-toast-close" type="button" @click="dismissScanToast" aria-label="Dismiss">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      </div>
+    </div>
   </div>
 </template>

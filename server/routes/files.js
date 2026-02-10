@@ -117,7 +117,13 @@ function registerFileRoutes(fastify, ctx) {
     if (!art || !art.path) {
       return sendError(reply, 404, 'not_found', 'Not found');
     }
-    if (!fs.existsSync(art.path)) {
+    let artStats;
+    try {
+      artStats = await fs.promises.stat(art.path);
+    } catch {
+      return sendError(reply, 404, 'not_found', 'Not found');
+    }
+    if (!artStats.isFile()) {
       return sendError(reply, 404, 'not_found', 'Not found');
     }
     reply.header('Content-Type', mime.lookup(art.path) || 'application/octet-stream');

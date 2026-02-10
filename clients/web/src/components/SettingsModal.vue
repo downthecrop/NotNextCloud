@@ -134,6 +134,7 @@ async function updateScanSettings(patch) {
   const nextSettings = {
     scanIntervalSeconds: statusValue('scanIntervalSeconds', 60),
     fastScan: statusValue('fastScan', true),
+    scanFsConcurrency: statusValue('scanFsConcurrency', 8),
     fullScanIntervalHours: statusValue('fullScanIntervalHours', 0),
     ...patch,
   };
@@ -213,12 +214,31 @@ watch(
               <div class="settings-meta">
                 <div>Last scan: {{ formatDate(status.lastScanAt) || 'Not yet' }}</div>
                 <div>Interval: {{ status.scanIntervalSeconds }}s</div>
+                <div>FS concurrency: {{ status.scanFsConcurrency || 8 }}</div>
                 <div>Status: {{ status.scanInProgress ? 'Running' : 'Idle' }}</div>
                 <div v-if="status.lastScanStats?.indexedTotal">
                   Indexed items: {{ formatCount(status.lastScanStats.indexedTotal) }}
                 </div>
                 <div v-else-if="status.lastScanStats?.processedEntries">
                   Last scan processed: {{ formatCount(status.lastScanStats.processedEntries) }}
+                </div>
+                <div v-if="status.lastScanStats?.errorCount">
+                  Last scan errors: {{ formatCount(status.lastScanStats.errorCount) }}
+                </div>
+                <div
+                  v-for="entry in status.lastScanStats?.errorCodes || []"
+                  :key="`scan-error-code-${entry.code}`"
+                >
+                  {{ entry.code }}: {{ formatCount(entry.count) }}
+                </div>
+                <div
+                  v-for="entry in status.lastScanStats?.roots || []"
+                  :key="`scan-root-${entry.rootId}-${entry.scope}-${entry.relPath || ''}`"
+                >
+                  {{ entry.rootName || entry.rootId }}:
+                  {{ formatCount(entry.processedEntries) }} items in
+                  {{ Math.max(0, Math.round((entry.durationMs || 0) / 1000)) }}s
+                  <span v-if="entry.errorCount">({{ formatCount(entry.errorCount) }} errors)</span>
                 </div>
               </div>
               <div v-if="status.scanInProgress && progress" class="settings-progress">
@@ -270,6 +290,20 @@ watch(
                 <option value="0">Off</option>
                 <option value="24">Daily</option>
                 <option value="168">Weekly</option>
+              </select>
+              <label for="scan-fs-concurrency">Filesystem scan concurrency</label>
+              <select
+                id="scan-fs-concurrency"
+                :value="status.scanFsConcurrency || 8"
+                :disabled="savingScan"
+                @change="updateScanSettings({ scanFsConcurrency: Number($event.target.value) })"
+              >
+                <option value="1">1</option>
+                <option value="2">2</option>
+                <option value="4">4</option>
+                <option value="8">8</option>
+                <option value="16">16</option>
+                <option value="32">32</option>
               </select>
               <label class="settings-toggle">
                 <input

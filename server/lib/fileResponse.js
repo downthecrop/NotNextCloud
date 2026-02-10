@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const mime = require('mime-types');
+const { parseRangeHeader } = require('./httpRange');
 
 function resolveMimeType(filePath, fallbackMime) {
   const resolved = fallbackMime || mime.lookup(filePath) || 'application/octet-stream';
@@ -9,22 +10,6 @@ function resolveMimeType(filePath, fallbackMime) {
     return 'audio/ogg; codecs=opus';
   }
   return resolved;
-}
-
-function parseRangeHeader(rangeHeader, size) {
-  if (!rangeHeader) {
-    return null;
-  }
-  const match = /bytes=(\d*)-(\d*)/.exec(rangeHeader);
-  if (!match) {
-    return null;
-  }
-  const start = match[1] ? Number.parseInt(match[1], 10) : 0;
-  const end = match[2] ? Number.parseInt(match[2], 10) : size - 1;
-  if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end < 0) {
-    return null;
-  }
-  return { start, end };
 }
 
 function sendFileResponse({ reply, fullPath, stats, mimeType, rangeHeader, downloadName }) {

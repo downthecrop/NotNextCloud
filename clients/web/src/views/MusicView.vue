@@ -74,6 +74,7 @@ const searchOffset = ref(0);
 const searchCursor = ref(null);
 const loading = ref(false);
 const error = ref('');
+const requestVersion = ref(0);
 const selectedTrack = ref(null);
 const selectedAlbum = ref(null);
 const selectedArtist = ref(null);
@@ -333,6 +334,7 @@ async function loadTracks({ reset = true } = {}) {
     error,
     errorMessage: 'Failed to load tracks',
     onReset: clearTrackSelection,
+    requestVersion,
     fetchPage: ({ offset: pageOffset, cursor: pageCursor }) =>
       listMedia({
         rootId: props.currentRoot.id,
@@ -369,6 +371,7 @@ async function runSearch({ reset = true } = {}) {
     cursor: searchCursor,
     loading,
     onReset: clearTrackSelection,
+    requestVersion,
     fetchPage: ({ offset: pageOffset, cursor: pageCursor }) =>
       searchEntries({
         rootId: props.currentRoot.id,
@@ -395,6 +398,7 @@ async function loadAlbums({ reset = true } = {}) {
     loading,
     error,
     errorMessage: 'Failed to load albums',
+    requestVersion,
     fetchPage: ({ offset: pageOffset }) =>
       listAlbums({
         rootId: props.currentRoot.id,
@@ -417,6 +421,7 @@ async function loadArtists({ reset = true } = {}) {
     loading,
     error,
     errorMessage: 'Failed to load artists',
+    requestVersion,
     fetchPage: ({ offset: pageOffset }) =>
       listArtists({
         rootId: props.currentRoot.id,

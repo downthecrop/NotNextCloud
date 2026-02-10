@@ -157,8 +157,6 @@ async function upsertUploadedFile({ db, root, relPath, fullPath }) {
     album: null,
     duration: null,
     album_key: null,
-    content_hash: null,
-    hash_alg: null,
     inode: Number.isFinite(stats.ino) ? stats.ino : null,
     device: Number.isFinite(stats.dev) ? stats.dev : null,
   });

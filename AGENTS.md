@@ -80,7 +80,7 @@
 
 ### Where Things Live
 - **Backend:** `server/server.js`, `server/indexer.js`, `server/db.js`, `server/config.js`
-- **Frontend:** `web/src/App.vue`, `web/src/views/FilesView.vue`, `web/src/views/PhotosView.vue`, `web/src/views/MusicView.vue`, `web/src/style.css`
+- **Frontend:** `clients/web/src/App.vue`, `clients/web/src/views/FilesView.vue`, `clients/web/src/views/PhotosView.vue`, `clients/web/src/views/MusicView.vue`, `clients/web/src/style.css`
 - **Data:** `data/metadata.sqlite` and `data/previews/`
 
 ### Current UX Notes

@@ -16,7 +16,7 @@ const ENTRY_COLUMNS = [
   'duration',
   'album_key',
 ];
-const ENTRY_DETAIL_COLUMNS = [...ENTRY_COLUMNS, 'content_hash', 'hash_alg', 'inode', 'device'];
+const ENTRY_DETAIL_COLUMNS = [...ENTRY_COLUMNS, 'inode', 'device'];
 const ENTRY_SELECT = `SELECT ${ENTRY_COLUMNS.join(', ')} FROM entries`;
 const ENTRY_SELECT_WITH_ID = `SELECT id, ${ENTRY_COLUMNS.join(', ')} FROM entries`;
 const ENTRY_DETAIL_SELECT = `SELECT ${ENTRY_DETAIL_COLUMNS.join(', ')} FROM entries`;
@@ -104,15 +104,13 @@ function initDb(dbPath) {
   addColumn('album', 'TEXT');
   addColumn('duration', 'REAL');
   addColumn('album_key', 'TEXT');
-  addColumn('content_hash', 'TEXT');
-  addColumn('hash_alg', 'TEXT');
   addColumn('inode', 'INTEGER');
   addColumn('device', 'INTEGER');
 
   db.exec(`
+    DROP INDEX IF EXISTS idx_entries_hash;
     CREATE INDEX IF NOT EXISTS idx_entries_root_album ON entries (root_id, album_key);
     CREATE INDEX IF NOT EXISTS idx_entries_root_artist ON entries (root_id, artist);
-    CREATE INDEX IF NOT EXISTS idx_entries_hash ON entries (content_hash);
     CREATE INDEX IF NOT EXISTS idx_entries_root_rel ON entries (root_id, rel_path);
     CREATE INDEX IF NOT EXISTS idx_entries_root_mtime ON entries (root_id, mtime);
     CREATE INDEX IF NOT EXISTS idx_entries_root_parent_order
@@ -176,10 +174,10 @@ function initDb(dbPath) {
   const upsertEntry = db.prepare(`
     INSERT INTO entries (
       root_id, rel_path, parent, name, ext, size, mtime, mime, is_dir, scan_id,
-      title, artist, album, duration, album_key, content_hash, hash_alg, inode, device
+      title, artist, album, duration, album_key, inode, device
     ) VALUES (
       @root_id, @rel_path, @parent, @name, @ext, @size, @mtime, @mime, @is_dir, @scan_id,
-      @title, @artist, @album, @duration, @album_key, @content_hash, @hash_alg, @inode, @device
+      @title, @artist, @album, @duration, @album_key, @inode, @device
     )
     ON CONFLICT(root_id, rel_path) DO UPDATE SET
       parent = excluded.parent,
@@ -195,8 +193,6 @@ function initDb(dbPath) {
       album = excluded.album,
       duration = excluded.duration,
       album_key = excluded.album_key,
-      content_hash = excluded.content_hash,
-      hash_alg = excluded.hash_alg,
       inode = excluded.inode,
       device = excluded.device
   `);
@@ -590,6 +586,11 @@ function initDb(dbPath) {
     WHERE root_id = ? AND rel_path = ?
   `);
 
+  const listScanEntriesByParent = db.prepare(`
+    ${ENTRY_DETAIL_SELECT}
+    WHERE root_id = ? AND parent IS ?
+  `);
+
   const touchEntry = db.prepare(`
     UPDATE entries
     SET scan_id = ?
@@ -711,6 +712,7 @@ function initDb(dbPath) {
     upsertAlbumArt,
     getAlbumArt,
     getEntry,
+    listScanEntriesByParent,
     touchEntry,
     touchPrefix,
     touchAll,

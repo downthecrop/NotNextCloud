@@ -72,6 +72,7 @@ const albumCounter = ref(1);
 const photoPins = ref([]);
 const activePin = ref(null);
 const jumpTarget = ref(null);
+const requestVersion = ref(0);
 const startDate = ref('');
 const endDate = ref('');
 const {
@@ -559,6 +560,7 @@ async function loadPhotos({ reset = true } = {}) {
     error,
     errorMessage: 'Failed to load photos',
     onReset: clearSelection,
+    requestVersion,
     fetchPage: ({ offset: pageOffset, cursor: pageCursor }) =>
       listMedia({
         rootId: props.currentRoot.id,
@@ -591,6 +593,7 @@ async function runSearch({ reset = true } = {}) {
     offset: searchOffset,
     cursor: searchCursor,
     loading,
+    requestVersion,
     fetchPage: ({ offset: pageOffset, cursor: pageCursor }) =>
       searchEntries({
         rootId: props.currentRoot.id,

@@ -3,7 +3,7 @@ const path = require('path');
 const Fastify = require('fastify');
 const fastifyStatic = require('@fastify/static');
 
-const { loadConfig } = require('./config');
+const { loadConfig } = require('./configParser');
 const { initDb, ENTRY_COLUMNS, ENTRY_SELECT, ENTRY_SELECT_WITH_ID } = require('./db');
 const { createIndexer } = require('./indexer');
 const { safeJoin, normalizeRelPath, normalizeParent } = require('./utils');
@@ -188,7 +188,7 @@ registerScanRoutes(fastify, ctx);
 registerTrashRoutes(fastify, ctx);
 registerZipRoutes(fastify, ctx);
 
-const staticRoot = path.join(projectRoot, 'web', 'dist');
+const staticRoot = path.join(projectRoot, 'clients', 'web', 'dist');
 if (fs.existsSync(staticRoot)) {
   fastify.register(fastifyStatic, {
     root: staticRoot,
