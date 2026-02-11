@@ -8,6 +8,7 @@ import MusicView from './views/MusicView.vue';
 import { createApiClient } from './api/client';
 import { formatDate } from './utils/formatting';
 import { parseHash, buildHash } from './utils/hashNav';
+import { readBoolean, readPositiveInt, writeBoolean } from './utils/storage';
 import { ALL_ROOTS_ID } from './constants';
 
 const token = ref(localStorage.getItem('localCloudToken') || '');
@@ -22,9 +23,9 @@ const musicJump = ref({ rootId: null, path: '', token: 0 });
 const photosJump = ref({ rootId: null, path: '', token: 0 });
 const settingsOpen = ref(false);
 let statusTimer = null;
-const pageSize = ref(parseInt(localStorage.getItem('localCloudPageSize') || '50', 10) || 50);
+const pageSize = ref(readPositiveInt('localCloudPageSize', 50));
 const apiInfo = ref(null);
-const uploadOverwrite = ref(localStorage.getItem('localCloudUploadOverwrite') === 'true');
+const uploadOverwrite = ref(readBoolean('localCloudUploadOverwrite', false));
 const status = ref({
   lastScanAt: null,
   scanInProgress: false,
@@ -74,7 +75,7 @@ const apiUrls = apiClient.urls;
 
 function setUploadOverwrite(value) {
   uploadOverwrite.value = Boolean(value);
-  localStorage.setItem('localCloudUploadOverwrite', uploadOverwrite.value ? 'true' : 'false');
+  writeBoolean('localCloudUploadOverwrite', uploadOverwrite.value);
 }
 
 provide('apiClient', apiClient);

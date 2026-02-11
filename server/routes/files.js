@@ -4,6 +4,7 @@ const mime = require('mime-types');
 const { sendError } = require('../lib/response');
 const { resolveMimeType, sendFileResponse } = require('../lib/fileResponse');
 const { safeAttachmentName } = require('../lib/paths');
+const { parseBooleanFlag, resolveRootPathOrReply, resolveRootOrReply } = require('../lib/route');
 
 function albumKeyFor(artist, album) {
   const safeArtist = artist || 'Unknown Artist';
@@ -17,19 +18,22 @@ function albumKeyFor(artist, album) {
 function registerFileRoutes(fastify, ctx) {
   const { config, db, previewCachePath, ensurePreview, previewQueue, safeJoin, normalizeRelPath } =
     ctx;
+  const resolveRootAndPath = (query, reply) =>
+    resolveRootPathOrReply({
+      roots: config.roots,
+      rootId: query.root,
+      relPath: query.path,
+      normalizeRelPath,
+      safeJoin,
+      reply,
+    });
 
   fastify.get('/api/file', async (request, reply) => {
-    const rootId = request.query.root;
-    const relPath = normalizeRelPath(request.query.path || '');
-    const root = config.roots.find((item) => item.id === rootId);
-    if (!root) {
-      return sendError(reply, 400, 'invalid_root', 'Invalid root');
+    const resolved = resolveRootAndPath(request.query, reply);
+    if (!resolved) {
+      return;
     }
-
-    const fullPath = safeJoin(root.absPath, relPath);
-    if (!fullPath) {
-      return sendError(reply, 400, 'invalid_path', 'Invalid path');
-    }
+    const { relPath, fullPath } = resolved;
 
     let stats;
     try {
@@ -42,7 +46,7 @@ function registerFileRoutes(fastify, ctx) {
       return sendError(reply, 400, 'invalid_path', 'Directory requested');
     }
 
-    const wantsDownload = request.query.download === '1' || request.query.download === 'true';
+    const wantsDownload = parseBooleanFlag(request.query.download, false);
     const resolvedMime = resolveMimeType(fullPath);
     return sendFileResponse({
       reply,
@@ -55,21 +59,15 @@ function registerFileRoutes(fastify, ctx) {
   });
 
   fastify.get('/api/preview', async (request, reply) => {
-    const rootId = request.query.root;
-    const relPath = normalizeRelPath(request.query.path || '');
-    const root = config.roots.find((item) => item.id === rootId);
-    if (!root) {
-      return sendError(reply, 400, 'invalid_root', 'Invalid root');
+    const resolved = resolveRootAndPath(request.query, reply);
+    if (!resolved) {
+      return;
     }
+    const { rootId, relPath, fullPath } = resolved;
 
     const entry = db.getEntry.get(rootId, relPath);
     if (!entry || entry.is_dir) {
       return sendError(reply, 404, 'not_found', 'Not found');
-    }
-
-    const fullPath = safeJoin(root.absPath, relPath);
-    if (!fullPath) {
-      return sendError(reply, 400, 'invalid_path', 'Invalid path');
     }
 
     const mimeType = entry.mime || mime.lookup(fullPath) || 'application/octet-stream';
@@ -109,8 +107,15 @@ function registerFileRoutes(fastify, ctx) {
     const rootId = request.query.root;
     const albumKey =
       request.query.key || albumKeyFor(request.query.artist, request.query.album);
-    const root = rootId === ctx.allRootsId ? true : config.roots.find((item) => item.id === rootId);
-    if (!root || !albumKey) {
+    let root = true;
+    if (rootId !== ctx.allRootsId) {
+      const resolvedRoot = resolveRootOrReply({ roots: config.roots, rootId, reply });
+      if (!resolvedRoot) {
+        return;
+      }
+      root = resolvedRoot.root;
+    }
+    if (!albumKey) {
       return sendError(reply, 400, 'invalid_request', 'Invalid request');
     }
     const art = db.getAlbumArt.get(albumKey);

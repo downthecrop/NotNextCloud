@@ -5,6 +5,8 @@ const { sendOk, sendError, sendList } = require('../lib/response');
 const { resolveMimeType, sendFileResponse } = require('../lib/fileResponse');
 const { parsePagination } = require('../lib/pagination');
 const { safeAttachmentName } = require('../lib/paths');
+const { getRootById } = require('../lib/roots');
+const { parseBooleanFlag } = require('../lib/route');
 const { trashRelName, movePath, removeTrashEntry, purgeTrash } = require('../lib/trash');
 
 function registerTrashRoutes(fastify, ctx) {
@@ -68,7 +70,7 @@ function registerTrashRoutes(fastify, ctx) {
     } catch {
       return sendError(reply, 404, 'not_found', 'Not found');
     }
-    const wantsDownload = request.query.download === '1' || request.query.download === 'true';
+    const wantsDownload = parseBooleanFlag(request.query.download, false);
     const resolvedMime = resolveMimeType(fullPath, entry.mime);
     return sendFileResponse({
       reply,
@@ -82,7 +84,7 @@ function registerTrashRoutes(fastify, ctx) {
 
   fastify.post('/api/delete', async (request, reply) => {
     const { root: rootId, paths } = request.body || {};
-    const root = config.roots.find((item) => item.id === rootId);
+    const root = getRootById(config.roots, rootId);
     if (!root || !Array.isArray(paths) || paths.length === 0) {
       return sendError(reply, 400, 'invalid_request', 'Invalid request');
     }
@@ -175,7 +177,7 @@ function registerTrashRoutes(fastify, ctx) {
 
     const results = { restored: 0, skipped: 0, errors: [] };
     for (const entry of rows) {
-      const root = config.roots.find((item) => item.id === entry.root_id);
+      const root = getRootById(config.roots, entry.root_id);
       if (!root) {
         results.skipped += 1;
         results.errors.push({ id: entry.id, error: 'Root not found' });
@@ -249,7 +251,7 @@ function registerTrashRoutes(fastify, ctx) {
 
   fastify.post('/api/trash/clear', async (request, reply) => {
     const rootId = request.body?.root || allRootsId;
-    if (rootId !== allRootsId && !config.roots.find((item) => item.id === rootId)) {
+    if (rootId !== allRootsId && !getRootById(config.roots, rootId)) {
       return sendError(reply, 400, 'invalid_root', 'Invalid root');
     }
     const count = await purgeTrash({ db, config }, { rootId: rootId === allRootsId ? null : rootId });

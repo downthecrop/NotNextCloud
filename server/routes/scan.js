@@ -1,5 +1,6 @@
 const fs = require('fs');
 const { sendOk, sendError } = require('../lib/response');
+const { resolveRootPathOrReply } = require('../lib/route');
 
 function registerScanRoutes(fastify, ctx) {
   const { config, indexer, safeJoin, normalizeRelPath, clearPreviewCache } = ctx;
@@ -7,19 +8,24 @@ function registerScanRoutes(fastify, ctx) {
   fastify.post('/api/scan', async (request, reply) => {
     const mode = (request.body?.mode || request.query?.mode || 'incremental').toLowerCase();
     const rootId = request.body?.root || request.query?.root || '';
-    const relPath = normalizeRelPath(request.body?.path || request.query?.path || '');
+    const relPath = request.body?.path || request.query?.path || '';
     const fastScan = mode === 'fast' || (mode === 'incremental' && config.fastScan);
     const fullScan = mode === 'full';
     const scanOptions = { fastScan: fullScan ? false : fastScan };
     if (rootId) {
-      const root = config.roots.find((item) => item.id === rootId);
-      if (!root) {
-        return sendError(reply, 400, 'invalid_root', 'Invalid root');
+      const resolved = resolveRootPathOrReply({
+        roots: config.roots,
+        rootId,
+        relPath,
+        normalizeRelPath,
+        safeJoin,
+        reply,
+      });
+      if (!resolved) {
+        return;
       }
-      const targetPath = safeJoin(root.absPath, relPath);
-      if (!targetPath) {
-        return sendError(reply, 400, 'invalid_path', 'Invalid path');
-      }
+      const root = resolved.root;
+      const targetPath = resolved.fullPath;
       let stats;
       try {
         stats = await fs.promises.stat(targetPath);
@@ -29,7 +35,7 @@ function registerScanRoutes(fastify, ctx) {
       if (!stats.isDirectory()) {
         return sendError(reply, 400, 'invalid_path', 'Path must be a directory');
       }
-      await indexer.scanPath({ root, relPath, ...scanOptions });
+      await indexer.scanPath({ root, relPath: resolved.relPath, ...scanOptions });
     } else {
       await indexer.scanAll(scanOptions);
     }

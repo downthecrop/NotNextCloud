@@ -9,10 +9,13 @@ import { useSort } from '../composables/useSort';
 import { useMultiSelect } from '../composables/useMultiSelect';
 import { useSidebar } from '../composables/useSidebar';
 import { useDebouncedWatch } from '../composables/useDebouncedWatch';
+import { useDraftCollection } from '../composables/useDraftCollection';
+import { usePinnedLocations } from '../composables/usePinnedLocations';
 import MiniPlayer from '../components/MiniPlayer.vue';
 import { formatDuration } from '../utils/formatting';
 import { itemKey as buildItemKey } from '../utils/itemKey';
 import { hasMoreFromTotalOrCursor, loadPaged } from '../utils/pagination';
+import { parentPath } from '../utils/pathing';
 import { ALL_ROOTS_ID } from '../constants';
 
 const props = defineProps({
@@ -78,9 +81,19 @@ const requestVersion = ref(0);
 const selectedTrack = ref(null);
 const selectedAlbum = ref(null);
 const selectedArtist = ref(null);
-const playlists = ref([]);
+const {
+  entries: playlists,
+  loadEntries: loadPlaylists,
+  persistEntries: persistPlaylists,
+  ensureDraftEntry: ensureDraftPlaylist,
+} = useDraftCollection({
+  storageKey: 'localCloudPlaylists',
+  counterKey: 'localCloudPlaylistCounter',
+  itemField: 'tracks',
+  idPrefix: 'draft',
+  namePrefix: 'New Playlist',
+});
 const selectedPlaylistId = ref(null);
-const draftCounter = ref(1);
 const {
   menu: contextMenu,
   openMenu: openContextMenuBase,
@@ -91,15 +104,24 @@ const {
   openMenu: openAlbumMenuBase,
   closeMenu: closeAlbumMenu,
 } = useMenu({ album: null });
-const musicPins = ref([]);
-const activePin = ref(null);
 const albumTracks = ref([]);
 const artistTracks = ref([]);
 const { sidebarOpen, toggleSidebar, closeSidebar } = useSidebar();
 useGlobalMenuClose([closeContextMenu, closeAlbumMenu]);
+const {
+  pins: musicPins,
+  activePin,
+  activePinPath,
+  loadPins,
+  addPinForItemPath,
+  setActivePinFromPath,
+  selectPin,
+  clearPin,
+} = usePinnedLocations({ storageKey: 'localCloudMusicPins' });
 
 const rootId = computed(() => props.currentRoot?.id || '');
 const isSearchMode = computed(() => Boolean(searchQuery.value.trim()));
+const normalizedSearchQuery = computed(() => searchQuery.value.trim().toLowerCase());
 const displaySongs = computed(() => (isSearchMode.value ? searchResults.value : items.value));
 const queue = computed(() => {
   if (mode.value === 'songs') {
@@ -117,11 +139,10 @@ const filteredAlbums = computed(() => {
   if (!isSearchMode.value) {
     return albums.value;
   }
-  const query = searchQuery.value.trim().toLowerCase();
   return albums.value.filter((album) => {
     return (
-      album.album?.toLowerCase().includes(query) ||
-      album.artist?.toLowerCase().includes(query)
+      album.album?.toLowerCase().includes(normalizedSearchQuery.value) ||
+      album.artist?.toLowerCase().includes(normalizedSearchQuery.value)
     );
   });
 });
@@ -129,8 +150,9 @@ const filteredArtists = computed(() => {
   if (!isSearchMode.value) {
     return artists.value;
   }
-  const query = searchQuery.value.trim().toLowerCase();
-  return artists.value.filter((artist) => artist.artist?.toLowerCase().includes(query));
+  return artists.value.filter((artist) =>
+    artist.artist?.toLowerCase().includes(normalizedSearchQuery.value)
+  );
 });
 const {
   selectedKeys: selectedTrackKeys,
@@ -150,7 +172,6 @@ const selectedPlaylist = computed(
 );
 const playlistTracks = computed(() => selectedPlaylist.value?.tracks || []);
 const isPlaylistDetail = computed(() => mode.value === 'playlists' && selectedPlaylist.value);
-const activePinPath = computed(() => activePin.value?.path || '');
 const albumTrackCount = computed(() => {
   if (!selectedAlbum.value) {
     return 0;
@@ -224,35 +245,17 @@ function trackSortValue(item, key) {
 
 const sortNumericKeys = ['duration'];
 const sortTieBreak = (a, b) => compareText(trackTitle(a), trackTitle(b));
+const sortTracks = (list) =>
+  sortList(list, {
+    getValue: trackSortValue,
+    numericKeys: sortNumericKeys,
+    tieBreak: sortTieBreak,
+  });
 
-const sortedSongs = computed(() =>
-  sortList(displaySongs.value, {
-    getValue: trackSortValue,
-    numericKeys: sortNumericKeys,
-    tieBreak: sortTieBreak,
-  })
-);
-const sortedAlbumTracks = computed(() =>
-  sortList(albumTracks.value, {
-    getValue: trackSortValue,
-    numericKeys: sortNumericKeys,
-    tieBreak: sortTieBreak,
-  })
-);
-const sortedPlaylistTracks = computed(() =>
-  sortList(playlistTracks.value, {
-    getValue: trackSortValue,
-    numericKeys: sortNumericKeys,
-    tieBreak: sortTieBreak,
-  })
-);
-const sortedArtistTracks = computed(() =>
-  sortList(artistTracks.value, {
-    getValue: trackSortValue,
-    numericKeys: sortNumericKeys,
-    tieBreak: sortTieBreak,
-  })
-);
+const sortedSongs = computed(() => sortTracks(displaySongs.value));
+const sortedAlbumTracks = computed(() => sortTracks(albumTracks.value));
+const sortedPlaylistTracks = computed(() => sortTracks(playlistTracks.value));
+const sortedArtistTracks = computed(() => sortTracks(artistTracks.value));
 
 function currentTrackList() {
   if (mode.value === 'songs') {
@@ -659,9 +662,7 @@ function handleOpenInFiles(track) {
   if (!trackRoot) {
     return;
   }
-  const parts = track.path.split('/');
-  parts.pop();
-  const pathValue = parts.join('/');
+  const pathValue = parentPath(track.path);
   props.onOpenInFiles({ rootId: trackRoot, path: pathValue });
   closeContextMenu();
 }
@@ -669,38 +670,6 @@ function handleOpenInFiles(track) {
 function openAlbumMenu(event, album) {
   closeContextMenu();
   openAlbumMenuBase(event, { album });
-}
-
-function persistPlaylists() {
-  localStorage.setItem('localCloudPlaylists', JSON.stringify(playlists.value));
-  localStorage.setItem('localCloudPlaylistCounter', String(draftCounter.value));
-}
-
-function loadPlaylists() {
-  try {
-    const stored = localStorage.getItem('localCloudPlaylists');
-    playlists.value = stored ? JSON.parse(stored) : [];
-  } catch {
-    playlists.value = [];
-  }
-  const counter = parseInt(localStorage.getItem('localCloudPlaylistCounter') || '1', 10);
-  draftCounter.value = Number.isFinite(counter) && counter > 0 ? counter : 1;
-}
-
-function ensureDraftPlaylist() {
-  let draft = playlists.value.find((playlist) => playlist.isDraft);
-  if (!draft) {
-    const id = `draft-${Date.now()}`;
-    draft = {
-      id,
-      name: `New Playlist #${draftCounter.value}`,
-      tracks: [],
-      isDraft: true,
-    };
-    draftCounter.value += 1;
-    playlists.value = [draft, ...playlists.value];
-  }
-  return draft;
 }
 
 function addTracksToPlaylist(tracksToAdd) {
@@ -860,54 +829,12 @@ function updatePlaylistName(value) {
   persistPlaylists();
 }
 
-function persistPins() {
-  localStorage.setItem('localCloudMusicPins', JSON.stringify(musicPins.value));
-}
-
-function loadPins() {
-  try {
-    const stored = localStorage.getItem('localCloudMusicPins');
-    musicPins.value = stored ? JSON.parse(stored) : [];
-  } catch {
-    musicPins.value = [];
-  }
-}
-
-function pinLabel(pathValue) {
-  if (!pathValue) {
-    return 'Root';
-  }
-  const parts = pathValue.split('/');
-  return parts[parts.length - 1] || pathValue;
-}
-
 function addPinForTrack(track) {
   if (!track?.path) {
     return;
   }
-  const parts = track.path.split('/');
-  parts.pop();
-  const pathValue = parts.join('/');
-  if (musicPins.value.some((pin) => pin.path === pathValue)) {
-    closeContextMenu();
-    return;
-  }
-  const nextPin = {
-    id: `pin-${Date.now()}`,
-    path: pathValue,
-    label: pinLabel(pathValue),
-  };
-  musicPins.value = [...musicPins.value, nextPin];
-  persistPins();
+  addPinForItemPath(track.path);
   closeContextMenu();
-}
-
-function selectPin(pin) {
-  activePin.value = pin;
-}
-
-function clearPin() {
-  activePin.value = null;
 }
 
 useDebouncedWatch(searchQuery, () => runSearch({ reset: true }));
@@ -965,13 +892,14 @@ watch(
     if (!value || typeof value.path !== 'string') {
       return;
     }
-    const parts = value.path.split('/');
-    parts.pop();
-    const pathValue = parts.join('/');
+    const pathValue = parentPath(value.path);
     if (pathValue) {
-      activePin.value = { id: `jump-${value.token || Date.now()}`, path: pathValue, label: pinLabel(pathValue) };
+      setActivePinFromPath(pathValue, {
+        idPrefix: 'jump',
+        token: value.token || Date.now(),
+      });
     } else {
-      activePin.value = null;
+      clearPin();
     }
   },
   { deep: true }

@@ -38,6 +38,22 @@ function loadConfig(projectRoot) {
   const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
   const roots = Array.isArray(config.roots) ? config.roots : [];
   const hostFsRoot = config.hostFsRoot ? resolvePath(projectRoot, config.hostFsRoot) : null;
+  const uploadCompressionConfig =
+    config.uploadMediaCompression && typeof config.uploadMediaCompression === 'object'
+      ? config.uploadMediaCompression
+      : {};
+  const uploadVideoPreset = String(uploadCompressionConfig.videoPreset || 'medium').toLowerCase();
+  const allowedVideoPresets = new Set([
+    'ultrafast',
+    'superfast',
+    'veryfast',
+    'faster',
+    'fast',
+    'medium',
+    'slow',
+    'slower',
+    'veryslow',
+  ]);
 
   const resolvedRoots = roots.map((root, index) => {
     const absPath = resolveRootPath(projectRoot, hostFsRoot, root.path);
@@ -73,6 +89,26 @@ function loadConfig(projectRoot) {
     uploadMaxFiles: Number.isFinite(config.uploadMaxFiles) ? config.uploadMaxFiles : 0,
     uploadTempDir: resolvePath(projectRoot, config.uploadTempDir || './data/uploads'),
     uploadOverwrite: Boolean(config.uploadOverwrite),
+    uploadCameraBasePath:
+      typeof config.uploadCameraBasePath === 'string' && config.uploadCameraBasePath.trim()
+        ? config.uploadCameraBasePath.trim()
+        : 'Camera Uploads',
+    uploadMediaCompression: {
+      enabled: Boolean(uploadCompressionConfig.enabled),
+      imageAvifQuality: Number.isFinite(uploadCompressionConfig.imageAvifQuality)
+        ? Math.max(1, Math.min(100, Math.floor(uploadCompressionConfig.imageAvifQuality)))
+        : 50,
+      imageAvifEffort: Number.isFinite(uploadCompressionConfig.imageAvifEffort)
+        ? Math.max(0, Math.min(9, Math.floor(uploadCompressionConfig.imageAvifEffort)))
+        : 4,
+      videoCrf: Number.isFinite(uploadCompressionConfig.videoCrf)
+        ? Math.max(0, Math.min(51, Math.floor(uploadCompressionConfig.videoCrf)))
+        : 28,
+      videoPreset: allowedVideoPresets.has(uploadVideoPreset) ? uploadVideoPreset : 'medium',
+      audioOpusBitrateKbps: Number.isFinite(uploadCompressionConfig.audioOpusBitrateKbps)
+        ? Math.max(16, Math.min(512, Math.floor(uploadCompressionConfig.audioOpusBitrateKbps)))
+        : 96,
+    },
     trashDir: resolvePath(projectRoot, config.trashDir || './data/trash'),
     trashRetentionDays: Number.isFinite(config.trashRetentionDays) ? config.trashRetentionDays : 30,
     sessionTtlHours: Number.isFinite(config.sessionTtlHours) ? config.sessionTtlHours : 24,

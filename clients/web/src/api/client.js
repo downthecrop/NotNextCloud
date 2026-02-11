@@ -124,37 +124,53 @@ export function createApiClient({
   };
 
   const buildUrl = (path, params) => resolvePath(`${path}${buildQuery(params)}`);
-
+  const makeUrlFactory = (path, { token = false } = {}) => (params) => {
+    const url = buildUrl(path, params);
+    return token ? withToken(url) : url;
+  };
+  const routeMap = {
+    health: '/api/health',
+    login: '/api/login',
+    logout: '/api/logout',
+    info: '/api/info',
+    bootstrap: '/api/bootstrap',
+    status: '/api/status',
+    roots: '/api/roots',
+    scan: '/api/scan',
+    scanSettings: '/api/scan/settings',
+    previewsRebuild: '/api/previews/rebuild',
+    list: '/api/list',
+    search: '/api/search',
+    media: '/api/media',
+    musicAlbums: '/api/music/albums',
+    musicArtists: '/api/music/artists',
+    musicAlbum: '/api/music/album',
+    musicArtist: '/api/music/artist',
+    uploadStatus: '/api/upload/status',
+    uploadChunk: '/api/upload/chunk',
+    zip: '/api/zip',
+    trash: '/api/trash',
+    trashRestore: '/api/trash/restore',
+    trashDelete: '/api/trash/delete',
+    trashClear: '/api/trash/clear',
+    delete: '/api/delete',
+  };
+  const tokenRouteMap = {
+    file: '/api/file',
+    preview: '/api/preview',
+    albumArt: '/api/album-art',
+    trashFile: '/api/trash/file',
+  };
   const urls = {
-    health: () => buildUrl('/api/health'),
-    login: () => buildUrl('/api/login'),
-    logout: () => buildUrl('/api/logout'),
-    info: () => buildUrl('/api/info'),
-    bootstrap: () => buildUrl('/api/bootstrap'),
-    status: () => buildUrl('/api/status'),
-    roots: () => buildUrl('/api/roots'),
-    scan: (params) => buildUrl('/api/scan', params),
-    scanSettings: () => buildUrl('/api/scan/settings'),
-    previewsRebuild: () => buildUrl('/api/previews/rebuild'),
-    list: (params) => buildUrl('/api/list', params),
-    search: (params) => buildUrl('/api/search', params),
-    media: (params) => buildUrl('/api/media', params),
-    musicAlbums: (params) => buildUrl('/api/music/albums', params),
-    musicArtists: (params) => buildUrl('/api/music/artists', params),
-    musicAlbum: (params) => buildUrl('/api/music/album', params),
-    musicArtist: (params) => buildUrl('/api/music/artist', params),
-    uploadStatus: (params) => buildUrl('/api/upload/status', params),
-    uploadChunk: (params) => buildUrl('/api/upload/chunk', params),
-    zip: () => buildUrl('/api/zip'),
-    trash: (params) => buildUrl('/api/trash', params),
-    trashRestore: () => buildUrl('/api/trash/restore'),
-    trashDelete: () => buildUrl('/api/trash/delete'),
-    trashClear: () => buildUrl('/api/trash/clear'),
-    delete: () => buildUrl('/api/delete'),
-    file: (params) => withToken(buildUrl('/api/file', params)),
-    preview: (params) => withToken(buildUrl('/api/preview', params)),
-    albumArt: (params) => withToken(buildUrl('/api/album-art', params)),
-    trashFile: (params) => withToken(buildUrl('/api/trash/file', params)),
+    ...Object.fromEntries(
+      Object.entries(routeMap).map(([name, routePath]) => [name, makeUrlFactory(routePath)])
+    ),
+    ...Object.fromEntries(
+      Object.entries(tokenRouteMap).map(([name, routePath]) => [
+        name,
+        makeUrlFactory(routePath, { token: true }),
+      ])
+    ),
   };
 
   return {

@@ -10,10 +10,13 @@ import { useMenu, useGlobalMenuClose } from '../composables/useMenu';
 import { useMultiSelect } from '../composables/useMultiSelect';
 import { useSort } from '../composables/useSort';
 import { useSidebar } from '../composables/useSidebar';
+import { useDraftCollection } from '../composables/useDraftCollection';
+import { usePinnedLocations } from '../composables/usePinnedLocations';
 import { formatDate, formatSize } from '../utils/formatting';
 import { itemKey as buildItemKey } from '../utils/itemKey';
 import { isImage, isVideo } from '../utils/media';
 import { hasMoreFromTotalOrCursor, loadPaged } from '../utils/pagination';
+import { parentPath } from '../utils/pathing';
 import { ALL_ROOTS_ID } from '../constants';
 
 const props = defineProps({
@@ -66,11 +69,19 @@ const selectedItem = ref(null);
 const modalItem = ref(null);
 const modalOpen = ref(false);
 const zoomLevel = ref(1);
-const albums = ref([]);
+const {
+  entries: albums,
+  loadEntries: loadAlbums,
+  persistEntries: persistAlbums,
+  ensureDraftEntry: ensureDraftAlbum,
+} = useDraftCollection({
+  storageKey: 'localCloudPhotoAlbums',
+  counterKey: 'localCloudPhotoAlbumCounter',
+  itemField: 'items',
+  idPrefix: 'album',
+  namePrefix: 'New Album',
+});
 const selectedAlbumId = ref(null);
-const albumCounter = ref(1);
-const photoPins = ref([]);
-const activePin = ref(null);
 const jumpTarget = ref(null);
 const requestVersion = ref(0);
 const startDate = ref('');
@@ -82,6 +93,16 @@ const {
 } = useMenu({ item: null });
 const { sidebarOpen, toggleSidebar, closeSidebar } = useSidebar();
 useGlobalMenuClose(closeContextMenu);
+const {
+  pins: photoPins,
+  activePin,
+  activePinPath,
+  loadPins,
+  addPinForItemPath,
+  setActivePinFromPath,
+  selectPin,
+  clearPin,
+} = usePinnedLocations({ storageKey: 'localCloudPhotoPins' });
 
 const rootId = computed(() => props.currentRoot?.id || '');
 function itemKey(item) {
@@ -98,7 +119,6 @@ const selectedAlbum = computed(
 );
 const isAlbumDetail = computed(() => Boolean(selectedAlbum.value));
 const albumItems = computed(() => selectedAlbum.value?.items || []);
-const activePinPath = computed(() => activePin.value?.path || '');
 const sortLabel = computed(() => (sortDir.value === 'desc' ? 'Newest' : 'Oldest'));
 const hasMore = computed(() => {
   if (isAlbumDetail.value) {
@@ -171,19 +191,19 @@ const filteredItems = computed(() => filterByDate(displayItems.value));
 const filteredAlbumItems = computed(() => filterByDate(albumItems.value));
 
 const sortedItems = computed(() =>
-  sortList(filteredItems.value, {
-    getValue: (item) => Number(item?.mtime) || 0,
-    numericKeys: ['date'],
-    tieBreak: (a, b) => compareText(a?.name, b?.name),
-  })
+  sortPhotos(filteredItems.value)
 );
 const sortedAlbumItems = computed(() =>
-  sortList(filteredAlbumItems.value, {
+  sortPhotos(filteredAlbumItems.value)
+);
+
+function sortPhotos(list) {
+  return sortList(list, {
     getValue: (item) => Number(item?.mtime) || 0,
     numericKeys: ['date'],
     tieBreak: (a, b) => compareText(a?.name, b?.name),
-  })
-);
+  });
+}
 
 const modalItems = computed(() => (isAlbumDetail.value ? sortedAlbumItems.value : sortedItems.value));
 
@@ -290,38 +310,6 @@ function handleKey(event) {
   }
 }
 
-function persistAlbums() {
-  localStorage.setItem('localCloudPhotoAlbums', JSON.stringify(albums.value));
-  localStorage.setItem('localCloudPhotoAlbumCounter', String(albumCounter.value));
-}
-
-function loadAlbums() {
-  try {
-    const stored = localStorage.getItem('localCloudPhotoAlbums');
-    albums.value = stored ? JSON.parse(stored) : [];
-  } catch {
-    albums.value = [];
-  }
-  const counter = parseInt(localStorage.getItem('localCloudPhotoAlbumCounter') || '1', 10);
-  albumCounter.value = Number.isFinite(counter) && counter > 0 ? counter : 1;
-}
-
-function ensureDraftAlbum() {
-  let draft = albums.value.find((album) => album.isDraft);
-  if (!draft) {
-    const id = `album-${Date.now()}`;
-    draft = {
-      id,
-      name: `New Album #${albumCounter.value}`,
-      items: [],
-      isDraft: true,
-    };
-    albumCounter.value += 1;
-    albums.value = [draft, ...albums.value];
-  }
-  return draft;
-}
-
 function addItemToAlbum(item) {
   if (!item?.path) {
     return;
@@ -373,54 +361,12 @@ function updateAlbumName(value) {
   persistAlbums();
 }
 
-function persistPins() {
-  localStorage.setItem('localCloudPhotoPins', JSON.stringify(photoPins.value));
-}
-
-function loadPins() {
-  try {
-    const stored = localStorage.getItem('localCloudPhotoPins');
-    photoPins.value = stored ? JSON.parse(stored) : [];
-  } catch {
-    photoPins.value = [];
-  }
-}
-
-function pinLabel(pathValue) {
-  if (!pathValue) {
-    return 'Root';
-  }
-  const parts = pathValue.split('/');
-  return parts[parts.length - 1] || pathValue;
-}
-
 function addPinForItem(item) {
   if (!item?.path) {
     return;
   }
-  const parts = item.path.split('/');
-  parts.pop();
-  const pathValue = parts.join('/');
-  if (photoPins.value.some((pin) => pin.path === pathValue)) {
-    closeContextMenu();
-    return;
-  }
-  const nextPin = {
-    id: `pin-${Date.now()}`,
-    path: pathValue,
-    label: pinLabel(pathValue),
-  };
-  photoPins.value = [...photoPins.value, nextPin];
-  persistPins();
+  addPinForItemPath(item.path);
   closeContextMenu();
-}
-
-function selectPin(pin) {
-  activePin.value = pin;
-}
-
-function clearPin() {
-  activePin.value = null;
 }
 
 function handleAlbumClear() {
@@ -490,9 +436,7 @@ function handleOpenInFiles(item) {
   if (!item?.path || !props.onOpenInFiles) {
     return;
   }
-  const parts = item.path.split('/');
-  parts.pop();
-  const pathValue = parts.join('/');
+  const pathValue = parentPath(item.path);
   props.onOpenInFiles({ rootId: itemRootId(item), path: pathValue });
   closeContextMenu();
 }
@@ -501,17 +445,14 @@ function applyJump(jump) {
   if (!jump?.path) {
     return;
   }
-  const parts = jump.path.split('/');
-  parts.pop();
-  const pathValue = parts.join('/');
+  const pathValue = parentPath(jump.path);
   if (pathValue) {
-    activePin.value = {
-      id: `jump-${jump.token || Date.now()}`,
-      path: pathValue,
-      label: pinLabel(pathValue),
-    };
+    setActivePinFromPath(pathValue, {
+      idPrefix: 'jump',
+      token: jump.token || Date.now(),
+    });
   } else {
-    activePin.value = null;
+    clearPin();
   }
   selectedAlbumId.value = null;
   jumpTarget.value = {

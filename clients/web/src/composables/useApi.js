@@ -21,35 +21,38 @@ export function useApi() {
       return `${url}${joiner}token=${encodeURIComponent(token.value)}`;
     });
 
+  const withQuery = (basePath, params = {}) => {
+    const query = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+      if (value === undefined || value === null || value === '') {
+        return;
+      }
+      query.set(key, String(value));
+    });
+    const encoded = query.toString();
+    return encoded ? `${basePath}?${encoded}` : basePath;
+  };
+
+  const tokenRouteUrl = (urlFactory, fallbackPath, params) =>
+    urlFactory ? urlFactory(params) : withToken(withQuery(fallbackPath, params));
+
   const fileUrl = (rootId, path) =>
-    apiUrls?.file
-      ? apiUrls.file({ root: rootId, path })
-      : withToken(`/api/file?root=${encodeURIComponent(rootId)}&path=${encodeURIComponent(path)}`);
+    tokenRouteUrl(apiUrls?.file, '/api/file', { root: rootId, path });
 
   const previewUrl = (rootId, path) =>
-    apiUrls?.preview
-      ? apiUrls.preview({ root: rootId, path })
-      : withToken(`/api/preview?root=${encodeURIComponent(rootId)}&path=${encodeURIComponent(path)}`);
+    tokenRouteUrl(apiUrls?.preview, '/api/preview', { root: rootId, path });
 
   const downloadUrl = (rootId, path) =>
-    apiUrls?.file
-      ? apiUrls.file({ root: rootId, path, download: 1 })
-      : withToken(
-          `/api/file?root=${encodeURIComponent(rootId)}&path=${encodeURIComponent(path)}&download=1`
-        );
+    tokenRouteUrl(apiUrls?.file, '/api/file', { root: rootId, path, download: 1 });
 
   const albumArtUrl = (rootId, key) =>
-    apiUrls?.albumArt
-      ? apiUrls.albumArt({ root: rootId, key })
-      : withToken(`/api/album-art?root=${encodeURIComponent(rootId)}&key=${encodeURIComponent(key)}`);
+    tokenRouteUrl(apiUrls?.albumArt, '/api/album-art', { root: rootId, key });
 
-  const trashFileUrl = (trashId, download = false) => {
-    if (apiUrls?.trashFile) {
-      return apiUrls.trashFile({ id: trashId, download: download ? 1 : undefined });
-    }
-    const base = `/api/trash/file?id=${encodeURIComponent(trashId)}`;
-    return withToken(download ? `${base}&download=1` : base);
-  };
+  const trashFileUrl = (trashId, download = false) =>
+    tokenRouteUrl(apiUrls?.trashFile, '/api/trash/file', {
+      id: trashId,
+      download: download ? 1 : undefined,
+    });
 
   return {
     token,

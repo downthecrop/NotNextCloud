@@ -9,6 +9,13 @@ function normalizeRootId(value) {
   return raw.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
 }
 
+function getRootById(roots, rootId) {
+  if (!Array.isArray(roots) || !rootId) {
+    return null;
+  }
+  return roots.find((item) => item.id === rootId) || null;
+}
+
 function resolveRootScope(rootId, roots, allRootsId) {
   if (!rootId) {
     return null;
@@ -76,6 +83,7 @@ function sanitizeRootPayload(rawRoots) {
 }
 
 module.exports = {
+  getRootById,
   resolveRootScope,
   buildRootFilter,
   formatRootsResponse,

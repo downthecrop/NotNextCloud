@@ -3,6 +3,11 @@ import { useApi } from './useApi';
 export function useLibraryApi() {
   const { apiJson, apiUrls } = useApi();
 
+  const request = (urlFactory, params) => apiJson(urlFactory(params));
+  const withPathPrefix = (pathPrefix) => (pathPrefix ? { pathPrefix } : {});
+  const requestWithRoot = (urlFactory, { rootId, pathPrefix, ...params }) =>
+    request(urlFactory, { root: rootId, ...withPathPrefix(pathPrefix), ...params });
+
   const withPage = ({ limit = 50, offset = 0, cursor = null, includeTotal = true }) => {
     const base = cursor ? { limit, cursor } : { limit, offset };
     if (includeTotal === false) {
@@ -10,6 +15,14 @@ export function useLibraryApi() {
     }
     return base;
   };
+
+  const requestPaged = (urlFactory, options) =>
+    request(urlFactory, {
+      root: options.rootId,
+      ...withPathPrefix(options.pathPrefix),
+      ...withPage(options),
+      ...options.extra,
+    });
 
   const listDirectory = ({
     rootId,
@@ -20,14 +33,14 @@ export function useLibraryApi() {
     includeTotal = true,
     sort,
   }) =>
-    apiJson(
-      apiUrls.list({
-        root: rootId,
-        path,
-        ...withPage({ limit, offset, cursor, includeTotal }),
-        sort: sort || undefined,
-      })
-    );
+    requestPaged(apiUrls.list, {
+      rootId,
+      limit,
+      offset,
+      cursor,
+      includeTotal,
+      extra: { path, sort: sort || undefined },
+    });
 
   const searchEntries = ({
     rootId,
@@ -39,15 +52,15 @@ export function useLibraryApi() {
     cursor = null,
     includeTotal = true,
   }) =>
-    apiJson(
-      apiUrls.search({
-        root: rootId,
-        q: query,
-        type,
-        pathPrefix: pathPrefix || undefined,
-        ...withPage({ limit, offset, cursor, includeTotal }),
-      })
-    );
+    requestPaged(apiUrls.search, {
+      rootId,
+      pathPrefix,
+      limit,
+      offset,
+      cursor,
+      includeTotal,
+      extra: { q: query, type },
+    });
 
   const listMedia = ({
     rootId,
@@ -58,52 +71,27 @@ export function useLibraryApi() {
     cursor = null,
     includeTotal = true,
   }) =>
-    apiJson(
-      apiUrls.media({
-        root: rootId,
-        type,
-        pathPrefix: pathPrefix || undefined,
-        ...withPage({ limit, offset, cursor, includeTotal }),
-      })
-    );
+    requestPaged(apiUrls.media, {
+      rootId,
+      pathPrefix,
+      limit,
+      offset,
+      cursor,
+      includeTotal,
+      extra: { type },
+    });
 
   const listAlbums = ({ rootId, pathPrefix, limit = 50, offset = 0 }) =>
-    apiJson(
-      apiUrls.musicAlbums({
-        root: rootId,
-        pathPrefix: pathPrefix || undefined,
-        limit,
-        offset,
-      })
-    );
+    requestWithRoot(apiUrls.musicAlbums, { rootId, pathPrefix, limit, offset });
 
   const listArtists = ({ rootId, pathPrefix, limit = 50, offset = 0 }) =>
-    apiJson(
-      apiUrls.musicArtists({
-        root: rootId,
-        pathPrefix: pathPrefix || undefined,
-        limit,
-        offset,
-      })
-    );
+    requestWithRoot(apiUrls.musicArtists, { rootId, pathPrefix, limit, offset });
 
   const listAlbumTracks = ({ rootId, key, pathPrefix }) =>
-    apiJson(
-      apiUrls.musicAlbum({
-        root: rootId,
-        key,
-        pathPrefix: pathPrefix || undefined,
-      })
-    );
+    requestWithRoot(apiUrls.musicAlbum, { rootId, pathPrefix, key });
 
   const listArtistTracks = ({ rootId, artist, pathPrefix }) =>
-    apiJson(
-      apiUrls.musicArtist({
-        root: rootId,
-        artist,
-        pathPrefix: pathPrefix || undefined,
-      })
-    );
+    requestWithRoot(apiUrls.musicArtist, { rootId, pathPrefix, artist });
 
   return {
     listDirectory,

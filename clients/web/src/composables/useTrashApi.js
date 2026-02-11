@@ -3,39 +3,28 @@ import { useApi } from './useApi';
 
 export function useTrashApi() {
   const { apiJson, apiUrls } = useApi();
+  const request = (urlFactory, params) => apiJson(urlFactory(params));
+  const post = (urlFactory, body) =>
+    apiJson(urlFactory(), {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
 
   const listTrash = ({ rootId = ALL_ROOTS_ID, limit = 50, offset = 0 }) =>
-    apiJson(
-      apiUrls.trash({
-        root: rootId,
-        limit,
-        offset,
-      })
-    );
+    request(apiUrls.trash, {
+      root: rootId,
+      limit,
+      offset,
+    });
 
   const deletePaths = ({ rootId, paths }) =>
-    apiJson(apiUrls.delete(), {
-      method: 'POST',
-      body: JSON.stringify({ root: rootId, paths }),
-    });
+    post(apiUrls.delete, { root: rootId, paths });
 
-  const restoreTrash = (ids) =>
-    apiJson(apiUrls.trashRestore(), {
-      method: 'POST',
-      body: JSON.stringify({ ids }),
-    });
+  const restoreTrash = (ids) => post(apiUrls.trashRestore, { ids });
 
-  const deleteTrash = (ids) =>
-    apiJson(apiUrls.trashDelete(), {
-      method: 'POST',
-      body: JSON.stringify({ ids }),
-    });
+  const deleteTrash = (ids) => post(apiUrls.trashDelete, { ids });
 
-  const clearTrash = (rootId = ALL_ROOTS_ID) =>
-    apiJson(apiUrls.trashClear(), {
-      method: 'POST',
-      body: JSON.stringify({ root: rootId }),
-    });
+  const clearTrash = (rootId = ALL_ROOTS_ID) => post(apiUrls.trashClear, { root: rootId });
 
   return {
     listTrash,

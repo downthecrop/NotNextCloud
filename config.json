@@ -3,7 +3,7 @@
   "port": 4170,
   "dbPath": "./data/files.db",
   "previewDir": "./data/previews",
-  "scanIntervalSeconds": 60,
+  "scanIntervalSeconds": 900,
   "fastScan": true,
   "scanFsConcurrency": 8,
   "fullScanIntervalHours": 24,
@@ -11,6 +11,15 @@
   "hostFsRoot": "/host",
   "uploadMaxBytes": 0,
   "uploadMaxFiles": 0,
+  "uploadCameraBasePath": "Camera Uploads",
+  "uploadMediaCompression": {
+    "enabled": false,
+    "imageAvifQuality": 50,
+    "imageAvifEffort": 4,
+    "videoCrf": 28,
+    "videoPreset": "medium",
+    "audioOpusBitrateKbps": 96
+  },
   "trashRetentionDays": 30,
   "roots": [
     {

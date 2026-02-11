@@ -2,13 +2,14 @@ const fs = require('fs');
 const path = require('path');
 const archiver = require('archiver');
 const { sendError } = require('../lib/response');
+const { getRootById } = require('../lib/roots');
 
 function registerZipRoutes(fastify, ctx) {
   const { config, safeJoin, normalizeRelPath } = ctx;
 
   fastify.post('/api/zip', async (request, reply) => {
     const { root: rootId, paths, flatten } = request.body || {};
-    const root = config.roots.find((item) => item.id === rootId);
+    const root = getRootById(config.roots, rootId);
     if (!root || !Array.isArray(paths) || paths.length === 0) {
       return sendError(reply, 400, 'invalid_request', 'Invalid request');
     }

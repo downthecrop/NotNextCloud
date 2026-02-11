@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { sendOk, sendError } = require('../lib/response');
+const { resolveRootOrReply } = require('../lib/route');
 const {
   parseBoolean,
   parseSize,
@@ -10,26 +11,70 @@ const {
   finalizeUpload,
   ensureEmptyFile,
   upsertUploadedFile,
+  maybeCompressUploadedMedia,
 } = require('../lib/uploads');
 
 function registerUploadRoutes(fastify, ctx) {
   const { config, indexer, safeJoin, normalizeParent, uploadChunkBytes } = ctx;
+  const resolveUploadRoot = (query, reply) => {
+    if (!config.uploadEnabled) {
+      sendError(reply, 403, 'upload_disabled', 'Uploads are disabled.');
+      return null;
+    }
+    return resolveRootOrReply({ roots: config.roots, rootId: query.root, reply });
+  };
+  const resolveTargetFromQuery = (query) =>
+    resolveUploadTarget({
+      basePath: query.path,
+      filePath: query.file,
+      target: query.target,
+      camera: query.camera,
+      cameraBasePath: config.uploadCameraBasePath,
+      cameraMonth: query.cameraMonth,
+      cameraDate: query.cameraDate,
+      capturedAt: query.capturedAt,
+      createdAt: query.createdAt,
+      modifiedAt: query.modifiedAt,
+      lastModified: query.lastModified,
+    });
+
+  async function finalizeAndIndexUpload({ root, targetRel, fullPath, partPath, overwrite }) {
+    const result = await finalizeUpload({ partPath, fullPath, overwrite });
+    if (!result.ok) {
+      return { ok: false, error: result.error };
+    }
+    const processed = await maybeCompressUploadedMedia({
+      config,
+      relPath: targetRel,
+      fullPath,
+      overwrite,
+      logger: fastify.log,
+    });
+    if (processed.relPath !== targetRel) {
+      ctx.db.deleteEntryByPath.run(root.id, targetRel);
+    }
+    await upsertUploadedFile({
+      db: ctx.db,
+      root,
+      relPath: processed.relPath,
+      fullPath: processed.fullPath,
+    });
+    await indexer.scanPath({
+      root,
+      relPath: normalizeParent(processed.relPath),
+      fastScan: true,
+    });
+    return { ok: true, processed };
+  }
 
   fastify.get('/api/upload/status', async (request, reply) => {
-    if (!config.uploadEnabled) {
-      return sendError(reply, 403, 'upload_disabled', 'Uploads are disabled.');
+    const resolvedRoot = resolveUploadRoot(request.query, reply);
+    if (!resolvedRoot) {
+      return;
     }
-    const rootId = request.query.root;
-    const root = config.roots.find((item) => item.id === rootId);
-    if (!root) {
-      return sendError(reply, 400, 'invalid_root', 'Invalid root');
-    }
+    const { rootId, root } = resolvedRoot;
 
-    const { targetRel, error: targetError } = resolveUploadTarget({
-      basePath: request.query.path,
-      filePath: request.query.file,
-      target: request.query.target,
-    });
+    const { targetRel, error: targetError } = resolveTargetFromQuery(request.query);
     if (!targetRel) {
       return sendError(reply, 400, 'invalid_request', targetError || 'Missing file name');
     }
@@ -103,15 +148,29 @@ function registerUploadRoutes(fastify, ctx) {
 
     if (offset === size) {
       try {
-        const result = await finalizeUpload({ partPath, fullPath, overwrite });
-        if (!result.ok) {
-          return sendError(reply, 409, 'exists', result.error, { status: 'exists' });
+        const completed = await finalizeAndIndexUpload({
+          root,
+          targetRel,
+          fullPath,
+          partPath,
+          overwrite,
+        });
+        if (!completed.ok) {
+          return sendError(reply, 409, 'exists', completed.error, { status: 'exists' });
         }
-        await upsertUploadedFile({ db: ctx.db, root, relPath: targetRel, fullPath });
+        const processed = completed.processed;
+        return sendOk({
+          status: 'complete',
+          uploadId,
+          offset: size,
+          size,
+          path: processed.relPath,
+          compressed: processed.compressed === true,
+          outputFormat: processed.outputFormat || null,
+        });
       } catch (error) {
         return sendError(reply, 500, 'upload_failed', 'Failed to finalize upload');
       }
-      return sendOk({ status: 'complete', uploadId, offset: size, size });
     }
 
     return sendOk({ status: 'ready', uploadId, offset, size });
@@ -121,20 +180,13 @@ function registerUploadRoutes(fastify, ctx) {
     '/api/upload/chunk',
     { bodyLimit: uploadChunkBytes + 1024 },
     async (request, reply) => {
-      if (!config.uploadEnabled) {
-        return sendError(reply, 403, 'upload_disabled', 'Uploads are disabled.');
+      const resolvedRoot = resolveUploadRoot(request.query, reply);
+      if (!resolvedRoot) {
+        return;
       }
-      const rootId = request.query.root;
-      const root = config.roots.find((item) => item.id === rootId);
-    if (!root) {
-      return sendError(reply, 400, 'invalid_root', 'Invalid root');
-    }
+      const { rootId, root } = resolvedRoot;
 
-      const { targetRel, error: targetError } = resolveUploadTarget({
-        basePath: request.query.path,
-        filePath: request.query.file,
-        target: request.query.target,
-      });
+      const { targetRel, error: targetError } = resolveTargetFromQuery(request.query);
       if (!targetRel) {
         return sendError(reply, 400, 'invalid_request', targetError || 'Missing file name');
       }
@@ -231,16 +283,27 @@ function registerUploadRoutes(fastify, ctx) {
 
       if (newSize === size) {
         try {
-          const result = await finalizeUpload({ partPath, fullPath, overwrite });
-          if (!result.ok) {
-            return sendError(reply, 409, 'exists', result.error, { status: 'exists' });
+          const completed = await finalizeAndIndexUpload({
+            root,
+            targetRel,
+            fullPath,
+            partPath,
+            overwrite,
+          });
+          if (!completed.ok) {
+            return sendError(reply, 409, 'exists', completed.error, { status: 'exists' });
           }
+          const processed = completed.processed;
+          return sendOk({
+            offset: newSize,
+            complete: true,
+            path: processed.relPath,
+            compressed: processed.compressed === true,
+            outputFormat: processed.outputFormat || null,
+          });
         } catch (error) {
           return sendError(reply, 500, 'upload_failed', 'Failed to finalize upload');
         }
-        await upsertUploadedFile({ db: ctx.db, root, relPath: targetRel, fullPath });
-        await indexer.scanPath({ root, relPath: normalizeParent(targetRel), fastScan: true });
-        return sendOk({ offset: newSize, complete: true });
       }
 
       return sendOk({ offset: newSize, complete: false });

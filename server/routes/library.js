@@ -1,7 +1,15 @@
 const { sendOk, sendError, sendList } = require('../lib/response');
-const { encodeCursor, decodeCursor } = require('../lib/cursor');
+const { encodeCursor } = require('../lib/cursor');
+const {
+  parseListCursor,
+  parseRawCursor,
+  parseListCursorAll,
+  parseNameCursor,
+  parseMtimeCursor,
+} = require('../lib/cursorParse');
 const { makePrefixLike } = require('../lib/paths');
 const { resolveRootScope } = require('../lib/roots');
+const { parseBooleanFlag } = require('../lib/route');
 const { toEntryList } = require('../lib/entries');
 const { parsePagination } = require('../lib/pagination');
 const {
@@ -27,102 +35,16 @@ const {
   listArtistTracksAll,
 } = require('../lib/queries');
 
-function parseIsDir(value) {
-  if (value === true || value === 1) {
-    return 1;
-  }
-  if (value === false || value === 0) {
-    return 0;
-  }
-  return null;
-}
-
-function parseListCursor(raw) {
-  const cursor = decodeCursor(raw);
-  if (!cursor || typeof cursor !== 'object') {
-    return null;
-  }
-  const isDir = parseIsDir(cursor.isDir);
-  if (isDir === null || typeof cursor.name !== 'string' || typeof cursor.path !== 'string') {
-    return null;
-  }
-  return { isDir, name: cursor.name, path: cursor.path };
-}
-
-function parseRawCursor(raw) {
-  const cursor = decodeCursor(raw);
-  if (!cursor || typeof cursor !== 'object') {
-    return null;
-  }
-  const id = Number(cursor.id);
-  if (!Number.isFinite(id)) {
-    return null;
-  }
-  const maxId = Number(cursor.maxId);
-  return { id, maxId: Number.isFinite(maxId) ? maxId : null };
-}
-
-function parseListCursorAll(raw) {
-  const cursor = decodeCursor(raw);
-  if (!cursor || typeof cursor !== 'object') {
-    return null;
-  }
-  const isDir = parseIsDir(cursor.isDir);
-  if (
-    isDir === null ||
-    typeof cursor.name !== 'string' ||
-    typeof cursor.path !== 'string' ||
-    typeof cursor.rootId !== 'string'
-  ) {
-    return null;
-  }
-  return { isDir, name: cursor.name, path: cursor.path, rootId: cursor.rootId };
-}
-
-function parseNameCursor(raw) {
-  const cursor = decodeCursor(raw);
-  if (!cursor || typeof cursor !== 'object') {
-    return null;
-  }
-  const isDir = parseIsDir(cursor.isDir);
-  if (
-    isDir === null ||
-    typeof cursor.name !== 'string' ||
-    typeof cursor.rootId !== 'string' ||
-    typeof cursor.path !== 'string'
-  ) {
-    return null;
-  }
-  return { isDir, name: cursor.name, rootId: cursor.rootId, path: cursor.path };
-}
-
-function parseMtimeCursor(raw) {
-  const cursor = decodeCursor(raw);
-  if (!cursor || typeof cursor !== 'object') {
-    return null;
-  }
-  const mtime = Number(cursor.mtime);
-  if (
-    !Number.isFinite(mtime) ||
-    typeof cursor.name !== 'string' ||
-    typeof cursor.rootId !== 'string' ||
-    typeof cursor.path !== 'string'
-  ) {
-    return null;
-  }
-  return { mtime, name: cursor.name, rootId: cursor.rootId, path: cursor.path };
-}
-
-function parseIncludeTotal(value) {
-  if (value === undefined || value === null || value === '') {
-    return false;
-  }
-  const normalized = String(value).toLowerCase();
-  return normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'on';
-}
-
 function registerLibraryRoutes(fastify, ctx) {
   const { config, db, entrySelect, entrySelectWithId, entryColumns, allRootsId } = ctx;
+  const resolveScopeOrReply = (rootId, reply) => {
+    const scope = resolveRootScope(rootId, config.roots, allRootsId);
+    if (!scope) {
+      sendError(reply, 400, 'invalid_root', 'Invalid root');
+      return null;
+    }
+    return scope;
+  };
 
   fastify.get('/api/list', async (request, reply) => {
     const rootId = request.query.root;
@@ -132,7 +54,7 @@ function registerLibraryRoutes(fastify, ctx) {
     const useRawOrder = sortMode === 'none';
     const cursor = !useRawOrder && request.query.cursor ? parseListCursor(request.query.cursor) : null;
     const rawCursor = useRawOrder && request.query.cursor ? parseRawCursor(request.query.cursor) : null;
-    const includeTotal = parseIncludeTotal(request.query.includeTotal);
+    const includeTotal = parseBooleanFlag(request.query.includeTotal, false);
     let rows = [];
     let total = includeTotal ? 0 : null;
     let nextCursor = null;
@@ -295,14 +217,14 @@ function registerLibraryRoutes(fastify, ctx) {
 
   fastify.get('/api/search', async (request, reply) => {
     const rootId = request.query.root;
-    const scope = resolveRootScope(rootId, config.roots, allRootsId);
+    const scope = resolveScopeOrReply(rootId, reply);
     if (!scope) {
-      return sendError(reply, 400, 'invalid_root', 'Invalid root');
+      return;
     }
     const query = (request.query.q || '').trim();
     const { limit, offset } = parsePagination(request.query);
     const type = (request.query.type || 'all').toLowerCase();
-    const includeTotal = parseIncludeTotal(request.query.includeTotal);
+    const includeTotal = parseBooleanFlag(request.query.includeTotal, false);
     if (!query) {
       return sendList([], includeTotal ? 0 : null, limit, offset);
     }
@@ -434,16 +356,16 @@ function registerLibraryRoutes(fastify, ctx) {
 
   fastify.get('/api/media', async (request, reply) => {
     const rootId = request.query.root;
-    const scope = resolveRootScope(rootId, config.roots, allRootsId);
+    const scope = resolveScopeOrReply(rootId, reply);
     if (!scope) {
-      return sendError(reply, 400, 'invalid_root', 'Invalid root');
+      return;
     }
 
     const type = (request.query.type || '').toLowerCase();
     const { limit, offset } = parsePagination(request.query);
     const prefixLike = makePrefixLike(request.query.pathPrefix);
     const cursor = request.query.cursor ? parseMtimeCursor(request.query.cursor) : null;
-    const includeTotal = parseIncludeTotal(request.query.includeTotal);
+    const includeTotal = parseBooleanFlag(request.query.includeTotal, false);
     if (request.query.cursor && !cursor) {
       return sendError(reply, 400, 'invalid_cursor', 'Invalid cursor');
     }
@@ -523,9 +445,9 @@ function registerLibraryRoutes(fastify, ctx) {
 
   fastify.get('/api/music/albums', async (request, reply) => {
     const rootId = request.query.root;
-    const scope = resolveRootScope(rootId, config.roots, allRootsId);
+    const scope = resolveScopeOrReply(rootId, reply);
     if (!scope) {
-      return sendError(reply, 400, 'invalid_root', 'Invalid root');
+      return;
     }
     const query = (request.query.q || '').trim();
     const like = query ? `%${query}%` : null;
@@ -579,9 +501,9 @@ function registerLibraryRoutes(fastify, ctx) {
 
   fastify.get('/api/music/artists', async (request, reply) => {
     const rootId = request.query.root;
-    const scope = resolveRootScope(rootId, config.roots, allRootsId);
+    const scope = resolveScopeOrReply(rootId, reply);
     if (!scope) {
-      return sendError(reply, 400, 'invalid_root', 'Invalid root');
+      return;
     }
     const query = (request.query.q || '').trim();
     const like = query ? `%${query}%` : null;
@@ -631,7 +553,7 @@ function registerLibraryRoutes(fastify, ctx) {
   fastify.get('/api/music/album', async (request, reply) => {
     const rootId = request.query.root;
     const albumKey = request.query.key;
-    const scope = resolveRootScope(rootId, config.roots, allRootsId);
+    const scope = resolveScopeOrReply(rootId, reply);
     if (!scope || !albumKey) {
       return sendError(reply, 400, 'invalid_request', 'Invalid request');
     }
@@ -653,7 +575,7 @@ function registerLibraryRoutes(fastify, ctx) {
   fastify.get('/api/music/artist', async (request, reply) => {
     const rootId = request.query.root;
     const artist = request.query.artist;
-    const scope = resolveRootScope(rootId, config.roots, allRootsId);
+    const scope = resolveScopeOrReply(rootId, reply);
     if (!scope || !artist) {
       return sendError(reply, 400, 'invalid_request', 'Invalid request');
     }
@@ -669,22 +591,7 @@ function registerLibraryRoutes(fastify, ctx) {
       : prefixLike
       ? db.listArtistTracksByPrefix.all(rootId, artist, prefixLike)
       : db.listArtistTracks.all(rootId, artist);
-    const items = rows.map((row) => ({
-      rootId: row.root_id,
-      path: row.rel_path,
-      name: row.name,
-      size: row.size,
-      mtime: row.mtime,
-      mime: row.mime,
-      ext: row.ext,
-      isDir: Boolean(row.is_dir),
-      title: row.title || null,
-      artist: row.artist || null,
-      album: row.album || null,
-      duration: row.duration || null,
-      albumKey: row.album_key || null,
-    }));
-    return sendOk({ items });
+    return sendOk({ items: toEntryList(rows) });
   });
 }
 
