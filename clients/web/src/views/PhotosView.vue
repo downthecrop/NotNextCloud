@@ -1,11 +1,12 @@
 <script setup>
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
+import { ref, computed, watch, onMounted } from 'vue';
 import { useApi } from '../composables/useApi';
 import { useDownloads } from '../composables/useDownloads';
 import { useImageErrors } from '../composables/useImageErrors';
 import { useInfiniteScroll } from '../composables/useInfiniteScroll';
 import { useLibraryApi } from '../composables/useLibraryApi';
 import { useDebouncedWatch } from '../composables/useDebouncedWatch';
+import { useMediaModal } from '../composables/useMediaModal';
 import { useMenu, useGlobalMenuClose } from '../composables/useMenu';
 import { useMultiSelect } from '../composables/useMultiSelect';
 import { useSort } from '../composables/useSort';
@@ -15,7 +16,7 @@ import { usePinnedLocations } from '../composables/usePinnedLocations';
 import { formatDate, formatSize } from '../utils/formatting';
 import { itemKey as buildItemKey } from '../utils/itemKey';
 import { isImage, isVideo } from '../utils/media';
-import { hasMoreFromTotalOrCursor, loadPaged } from '../utils/pagination';
+import { hasMoreFromTotalOrCursor, loadPaged, resetPagedState } from '../utils/pagination';
 import { parentPath } from '../utils/pathing';
 import { ALL_ROOTS_ID } from '../constants';
 
@@ -65,10 +66,6 @@ const searchOffset = ref(0);
 const searchCursor = ref(null);
 const loading = ref(false);
 const error = ref('');
-const selectedItem = ref(null);
-const modalItem = ref(null);
-const modalOpen = ref(false);
-const zoomLevel = ref(1);
 const {
   entries: albums,
   loadEntries: loadAlbums,
@@ -233,26 +230,21 @@ function itemRootId(item) {
 function tileClass(item) {
   return ['tile', { selected: isSelected(item) }];
 }
-
-function openModal(item) {
-  selectedItem.value = item;
-  modalItem.value = item;
-  zoomLevel.value = 1;
-  modalOpen.value = true;
-}
-
-function closeModal() {
-  modalOpen.value = false;
-}
-
-function setModalItem(item) {
-  if (!item) {
-    return;
-  }
-  modalItem.value = item;
-  selectedItem.value = item;
-  zoomLevel.value = 1;
-}
+const {
+  modalOpen,
+  modalItem,
+  zoomLevel,
+  openModal,
+  closeModal,
+  setModalItem,
+  navigateModal,
+  zoomIn,
+  zoomOut,
+} = useMediaModal({
+  getItems: () => modalItems.value,
+  getItemKey: (item) => item?.path || '',
+  onSelect: (item) => setSingleSelection(item),
+});
 
 function handleItemClick(item, event) {
   const hasMeta = event?.metaKey || event?.ctrlKey;
@@ -265,49 +257,7 @@ function handleItemClick(item, event) {
     toggleSelection(item);
     return;
   }
-  setSingleSelection(item);
   openModal(item);
-}
-
-function navigateModal(delta) {
-  const list = modalItems.value;
-  if (!modalItem.value || !list.length) {
-    return;
-  }
-  const index = list.findIndex((entry) => entry.path === modalItem.value.path);
-  if (index < 0) {
-    return;
-  }
-  const nextIndex = index + delta;
-  if (nextIndex < 0 || nextIndex >= list.length) {
-    return;
-  }
-  setModalItem(list[nextIndex]);
-}
-
-function zoomIn() {
-  zoomLevel.value = Math.min(3, zoomLevel.value + 0.25);
-}
-
-function zoomOut() {
-  zoomLevel.value = Math.max(1, zoomLevel.value - 0.25);
-}
-
-function handleKey(event) {
-  if (!modalOpen.value) {
-    return;
-  }
-  if (event.key === 'ArrowRight') {
-    navigateModal(1);
-  } else if (event.key === 'ArrowLeft') {
-    navigateModal(-1);
-  } else if (event.key === 'Escape') {
-    closeModal();
-  } else if (event.key === '+' || event.key === '=') {
-    zoomIn();
-  } else if (event.key === '-') {
-    zoomOut();
-  }
 }
 
 function addItemToAlbum(item) {
@@ -521,10 +471,7 @@ async function runSearch({ reset = true } = {}) {
   }
   const query = searchQuery.value.trim();
   if (!query) {
-    searchResults.value = [];
-    searchOffset.value = 0;
-    searchCursor.value = null;
-    searchTotal.value = 0;
+    resetPagedState({ items: searchResults, total: searchTotal, offset: searchOffset, cursor: searchCursor });
     return;
   }
   await loadPaged({
@@ -573,7 +520,6 @@ watch(
   () => props.currentRoot,
   () => {
     searchQuery.value = '';
-    selectedItem.value = null;
     modalItem.value = null;
     modalOpen.value = false;
     resetImageErrors();
@@ -614,10 +560,6 @@ watch(
   { immediate: true }
 );
 
-watch(modalOpen, (value) => {
-  document.body.style.overflow = value ? 'hidden' : '';
-});
-
 watch([searchQuery, startDate, endDate, selectedAlbumId], () => {
   clearSelection();
 });
@@ -625,12 +567,6 @@ watch([searchQuery, startDate, endDate, selectedAlbumId], () => {
 onMounted(() => {
   loadAlbums();
   loadPins();
-  window.addEventListener('keydown', handleKey);
-});
-
-onUnmounted(() => {
-  window.removeEventListener('keydown', handleKey);
-  document.body.style.overflow = '';
 });
 
 watch(

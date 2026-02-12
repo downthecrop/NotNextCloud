@@ -14,7 +14,7 @@ import { usePinnedLocations } from '../composables/usePinnedLocations';
 import MiniPlayer from '../components/MiniPlayer.vue';
 import { formatDuration } from '../utils/formatting';
 import { itemKey as buildItemKey } from '../utils/itemKey';
-import { hasMoreFromTotalOrCursor, loadPaged } from '../utils/pagination';
+import { hasMoreFromTotalOrCursor, loadPaged, resetPagedState } from '../utils/pagination';
 import { parentPath } from '../utils/pathing';
 import { ALL_ROOTS_ID } from '../constants';
 
@@ -360,10 +360,7 @@ async function runSearch({ reset = true } = {}) {
   }
   const query = searchQuery.value.trim();
   if (!query) {
-    searchResults.value = [];
-    searchOffset.value = 0;
-    searchCursor.value = null;
-    searchTotal.value = 0;
+    resetPagedState({ items: searchResults, total: searchTotal, offset: searchOffset, cursor: searchCursor });
     return;
   }
   await loadPaged({

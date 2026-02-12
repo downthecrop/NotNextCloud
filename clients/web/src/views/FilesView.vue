@@ -1,21 +1,23 @@
 <script setup>
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
+import { ref, computed, watch } from 'vue';
 import { useApi } from '../composables/useApi';
 import { useDownloads } from '../composables/useDownloads';
 import { useImageErrors } from '../composables/useImageErrors';
 import { useInfiniteScroll } from '../composables/useInfiniteScroll';
 import { useLibraryApi } from '../composables/useLibraryApi';
 import { useMenu, useGlobalMenuClose } from '../composables/useMenu';
+import { useMediaModal } from '../composables/useMediaModal';
 import { useMultiSelect } from '../composables/useMultiSelect';
 import { useSidebar } from '../composables/useSidebar';
 import { useSort } from '../composables/useSort';
 import { useTrashApi } from '../composables/useTrashApi';
 import { useDebouncedWatch } from '../composables/useDebouncedWatch';
+import { useFileUploads } from '../composables/useFileUploads';
 import MiniPlayer from '../components/MiniPlayer.vue';
 import { formatDate, formatSize } from '../utils/formatting';
 import { itemKey as buildItemKey } from '../utils/itemKey';
 import { isAudio, isImage, isMedia, isVideo } from '../utils/media';
-import { hasMoreFromTotalOrCursor, loadPaged } from '../utils/pagination';
+import { hasMoreFromTotalOrCursor, loadPaged, resetPagedState } from '../utils/pagination';
 import { ALL_ROOTS_ID } from '../constants';
 
 const props = defineProps({
@@ -90,21 +92,11 @@ const viewMode = ref('list');
 const loading = ref(false);
 const error = ref('');
 const { sidebarOpen, toggleSidebar, closeSidebar } = useSidebar();
-const modalOpen = ref(false);
-const modalItem = ref(null);
-const zoomLevel = ref(1);
-const fileInput = ref(null);
-const dragActive = ref(false);
-const uploading = ref(false);
-const uploadMessage = ref('');
-const uploadErrors = ref([]);
-const uploadProgress = ref({ file: '', percent: 0 });
 const isTrashView = ref(false);
 const trashItems = ref([]);
 const trashTotal = ref(0);
 const trashOffset = ref(0);
 const needsFilesRefresh = ref(false);
-const dragDepth = ref(0);
 const requestVersion = ref(0);
 const {
   menu: breadcrumbMenu,
@@ -234,6 +226,24 @@ const hasMore = computed(() => {
 const audioQueue = computed(() =>
   isTrashView.value ? [] : displayItems.value.filter((item) => isAudio(item))
 );
+const mediaModalItems = computed(() =>
+  displayItems.value.filter((entry) => isMedia(entry))
+);
+const {
+  modalOpen,
+  modalItem,
+  zoomLevel,
+  openModal,
+  closeModal,
+  setModalItem,
+  navigateModal,
+  zoomIn,
+  zoomOut,
+} = useMediaModal({
+  getItems: () => mediaModalItems.value,
+  getItemKey: (item) => item?.path || '',
+  onSelect: (item) => setSingleSelection(item),
+});
 const selectedAudioTrack = computed(() =>
   activeItem.value && isAudio(activeItem.value) ? activeItem.value : null
 );
@@ -269,6 +279,37 @@ const activeItem = computed(() => {
     searchResults.value.find((item) => itemKey(item) === needle) ||
     null
   );
+});
+
+const {
+  fileInput,
+  dragActive,
+  uploading,
+  uploadMessage,
+  uploadErrors,
+  uploadProgress,
+  openFilePicker,
+  handleFileSelect,
+  handleDragOver,
+  handleDragEnter,
+  handleDragLeave,
+  handleDrop,
+  resetUploadState,
+} = useFileUploads({
+  apiJson,
+  apiUrls,
+  canUpload,
+  getRootId: () => props.currentRoot?.id || '',
+  getCurrentPath: () => currentPath.value,
+  getUploadChunkBytes: () => props.uploadChunkBytes,
+  getUploadOverwrite: () => props.uploadOverwrite,
+  onUploadComplete: async () => {
+    if (isSearchMode.value) {
+      await runSearch({ reset: true });
+    } else {
+      await loadList({ reset: true });
+    }
+  },
 });
 
 async function scheduleScan(mode, pathValue) {
@@ -475,211 +516,10 @@ async function openTrash() {
   modalItem.value = null;
   modalOpen.value = false;
   currentPath.value = '';
-  uploadMessage.value = '';
-  uploadErrors.value = [];
-  uploadProgress.value = { file: '', percent: 0 };
+  resetUploadState();
   clearSelection();
   await loadTrash({ reset: true });
   closeSidebar();
-}
-
-function openFilePicker() {
-  if (!canUpload.value || uploading.value) {
-    return;
-  }
-  fileInput.value?.click();
-}
-
-function handleFileSelect(event) {
-  const files = Array.from(event.target?.files || []);
-  if (!files.length) {
-    return;
-  }
-  event.target.value = '';
-  uploadFiles(files);
-}
-
-function handleDragOver(event) {
-  if (!canUpload.value || uploading.value) {
-    return;
-  }
-  if (!event.dataTransfer?.types?.includes('Files')) {
-    return;
-  }
-  event.preventDefault();
-  event.dataTransfer.dropEffect = 'copy';
-  dragActive.value = true;
-}
-
-function handleDragEnter(event) {
-  if (!canUpload.value || uploading.value) {
-    return;
-  }
-  if (!event.dataTransfer?.types?.includes('Files')) {
-    return;
-  }
-  event.preventDefault();
-  dragDepth.value += 1;
-  dragActive.value = true;
-}
-
-function handleDragLeave(event) {
-  if (!event.dataTransfer?.types?.includes('Files')) {
-    return;
-  }
-  event.preventDefault();
-  dragDepth.value = Math.max(0, dragDepth.value - 1);
-  if (dragDepth.value === 0) {
-    dragActive.value = false;
-  }
-}
-
-function handleDrop(event) {
-  if (!canUpload.value || uploading.value) {
-    return;
-  }
-  if (!event.dataTransfer?.types?.includes('Files')) {
-    return;
-  }
-  event.preventDefault();
-  dragActive.value = false;
-  dragDepth.value = 0;
-  const files = Array.from(event.dataTransfer?.files || []);
-  if (!files.length) {
-    return;
-  }
-  uploadFiles(files);
-}
-
-async function uploadFiles(files) {
-  if (!canUpload.value || !files.length) {
-    return;
-  }
-  uploading.value = true;
-  uploadMessage.value = 'Uploading...';
-  uploadErrors.value = [];
-  uploadProgress.value = { file: '', percent: 0 };
-  const chunkBytes = Math.max(1024 * 1024, props.uploadChunkBytes || 8 * 1024 * 1024);
-  let stored = 0;
-  let skipped = 0;
-  const errors = [];
-  try {
-    for (const file of files) {
-      const name = file.webkitRelativePath || file.name;
-      if (!name) {
-        skipped += 1;
-        errors.push({ file: '(unknown)', error: 'Missing filename' });
-        continue;
-      }
-      const getStatus = async (overwriteFlag) => {
-        const result = await apiJson(
-          apiUrls.uploadStatus({
-            root: props.currentRoot.id,
-            path: currentPath.value,
-            file: name,
-            size: file.size,
-            overwrite: overwriteFlag ? 1 : 0,
-          })
-        );
-        if (!result.ok) {
-          if (result.error?.code === 'exists') {
-            return { status: 'exists' };
-          }
-          throw new Error(result.error?.message || 'Upload failed');
-        }
-        return result.data;
-      };
-      try {
-        uploadProgress.value = { file: name, percent: 0 };
-        uploadMessage.value = `Preparing ${name}...`;
-        let overwriteFlag = props.uploadOverwrite;
-        let status = await getStatus(overwriteFlag);
-        if (status?.status === 'exists' && !overwriteFlag) {
-          const confirmOverwrite = confirm(`"${name}" already exists. Overwrite it?`);
-          if (!confirmOverwrite) {
-            skipped += 1;
-            errors.push({ file: name, error: 'File already exists' });
-            continue;
-          }
-          overwriteFlag = true;
-          status = await getStatus(true);
-        }
-        if (status?.status === 'complete') {
-          stored += 1;
-          uploadProgress.value = { file: name, percent: 100 };
-          continue;
-        }
-
-        let offset = Number.isFinite(status?.offset) ? status.offset : 0;
-        if (offset < 0 || offset > file.size) {
-          offset = 0;
-        }
-        if (offset > 0) {
-          uploadMessage.value = `Resuming ${name}...`;
-        }
-
-        while (offset < file.size) {
-          const chunk = file.slice(offset, Math.min(offset + chunkBytes, file.size));
-          const percent = Math.min(100, Math.floor((offset / file.size) * 100));
-          uploadProgress.value = { file: name, percent };
-          uploadMessage.value = `Uploading ${name} (${percent}%)`;
-          const chunkResult = await apiJson(
-            apiUrls.uploadChunk({
-              root: props.currentRoot.id,
-              path: currentPath.value,
-              file: name,
-              size: file.size,
-              offset,
-              overwrite: overwriteFlag ? 1 : 0,
-            }),
-            {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/octet-stream' },
-              body: chunk,
-            }
-          );
-          if (!chunkResult.ok) {
-            if (chunkResult.error?.code === 'offset_mismatch') {
-              const expected = Number.isFinite(chunkResult.error?.details?.expectedOffset)
-                ? chunkResult.error.details.expectedOffset
-                : offset;
-              offset = expected;
-              continue;
-            }
-            if (chunkResult.error?.code === 'exists') {
-              throw new Error('File already exists');
-            }
-            throw new Error(chunkResult.error?.message || 'Upload failed');
-          }
-          const data = chunkResult.data || {};
-          offset = Number.isFinite(data?.offset) ? data.offset : offset + chunk.size;
-          if (data?.complete) {
-            break;
-          }
-        }
-
-        stored += 1;
-        uploadProgress.value = { file: name, percent: 100 };
-      } catch (error) {
-        skipped += 1;
-        errors.push({ file: name, error: error?.message || 'Upload failed' });
-      }
-    }
-
-    uploadMessage.value = `Uploaded ${stored} file${stored === 1 ? '' : 's'}${
-      skipped ? `, skipped ${skipped}` : ''
-    }.`;
-    if (errors.length) {
-      uploadErrors.value = errors.slice(0, 5);
-    }
-    if (isSearchMode.value) {
-      await runSearch({ reset: true });
-    } else {
-      await loadList({ reset: true });
-    }
-  } finally {
-    uploading.value = false;
-  }
 }
 
 function iconClass(item) {
@@ -758,10 +598,7 @@ async function runSearch({ reset = true } = {}) {
   }
   const query = searchQuery.value.trim();
   if (!query) {
-    searchResults.value = [];
-    searchOffset.value = 0;
-    searchCursor.value = null;
-    searchTotal.value = 0;
+    resetPagedState({ items: searchResults, total: searchTotal, offset: searchOffset, cursor: searchCursor });
     return;
   }
   await loadPaged({
@@ -804,50 +641,6 @@ async function openItem(item) {
     props.onNavigatePath?.({ rootId: itemRootId(item) || rootId.value, path: item.path });
     return;
   }
-}
-
-function openModal(item) {
-  modalItem.value = item;
-  setSingleSelection(item);
-  zoomLevel.value = 1;
-  modalOpen.value = true;
-}
-
-function closeModal() {
-  modalOpen.value = false;
-}
-
-function setModalItem(item) {
-  if (!item) {
-    return;
-  }
-  modalItem.value = item;
-  setSingleSelection(item);
-  zoomLevel.value = 1;
-}
-
-function navigateModal(delta) {
-  const list = displayItems.value.filter((entry) => isMedia(entry));
-  if (!modalItem.value || !list.length) {
-    return;
-  }
-  const index = list.findIndex((entry) => entry.path === modalItem.value.path);
-  if (index < 0) {
-    return;
-  }
-  const nextIndex = index + delta;
-  if (nextIndex < 0 || nextIndex >= list.length) {
-    return;
-  }
-  setModalItem(list[nextIndex]);
-}
-
-function zoomIn() {
-  zoomLevel.value = Math.min(3, zoomLevel.value + 0.25);
-}
-
-function zoomOut() {
-  zoomLevel.value = Math.max(1, zoomLevel.value - 0.25);
 }
 
 async function handleItemClick(item, event) {
@@ -986,10 +779,7 @@ watch(
     searchQuery.value = '';
     modalItem.value = null;
     modalOpen.value = false;
-    uploadMessage.value = '';
-    uploadErrors.value = [];
-    uploadProgress.value = { file: '', percent: 0 };
-    dragActive.value = false;
+    resetUploadState();
     resetImageErrors();
     const pending = pendingOpen.value;
     pendingOpen.value = null;
@@ -1065,53 +855,6 @@ watch(
     }
   }
 );
-
-watch(modalOpen, (value) => {
-  document.body.style.overflow = value ? 'hidden' : '';
-});
-
-const handleWindowDragOver = (event) => {
-  if (event.dataTransfer?.types?.includes('Files')) {
-    event.preventDefault();
-  }
-};
-const handleWindowDrop = (event) => {
-  if (event.dataTransfer?.types?.includes('Files')) {
-    event.preventDefault();
-    dragDepth.value = 0;
-    dragActive.value = false;
-  }
-};
-
-onMounted(() => {
-  window.addEventListener('dragover', handleWindowDragOver);
-  window.addEventListener('drop', handleWindowDrop);
-  window.addEventListener('keydown', handleKey);
-});
-
-onUnmounted(() => {
-  window.removeEventListener('dragover', handleWindowDragOver);
-  window.removeEventListener('drop', handleWindowDrop);
-  window.removeEventListener('keydown', handleKey);
-  document.body.style.overflow = '';
-});
-
-function handleKey(event) {
-  if (!modalOpen.value) {
-    return;
-  }
-  if (event.key === 'Escape') {
-    closeModal();
-  } else if (event.key === 'ArrowRight') {
-    navigateModal(1);
-  } else if (event.key === 'ArrowLeft') {
-    navigateModal(-1);
-  } else if (event.key === '+' || event.key === '=') {
-    zoomIn();
-  } else if (event.key === '-') {
-    zoomOut();
-  }
-}
 </script>
 
 <template>

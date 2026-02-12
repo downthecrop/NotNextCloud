@@ -1,3 +1,10 @@
+export function resetPagedState({ items, total, offset, cursor }) {
+  if (items) items.value = [];
+  if (total) total.value = 0;
+  if (offset) offset.value = 0;
+  if (cursor) cursor.value = null;
+}
+
 export async function loadPaged({
   reset = true,
   items,
@@ -18,14 +25,7 @@ export async function loadPaged({
   const isStale = () => requestVersion && requestVersion.value !== callVersion;
 
   if (reset) {
-    items.value = [];
-    total.value = 0;
-    if (offset) {
-      offset.value = 0;
-    }
-    if (cursor) {
-      cursor.value = null;
-    }
+    resetPagedState({ items, total, offset, cursor });
     onReset?.();
   }
   if (loading) {

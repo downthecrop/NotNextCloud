@@ -1,4 +1,5 @@
 import { inject } from 'vue';
+import { buildQuery } from '../api/client';
 
 export function useApi() {
   const token = inject('authToken');
@@ -21,20 +22,8 @@ export function useApi() {
       return `${url}${joiner}token=${encodeURIComponent(token.value)}`;
     });
 
-  const withQuery = (basePath, params = {}) => {
-    const query = new URLSearchParams();
-    Object.entries(params).forEach(([key, value]) => {
-      if (value === undefined || value === null || value === '') {
-        return;
-      }
-      query.set(key, String(value));
-    });
-    const encoded = query.toString();
-    return encoded ? `${basePath}?${encoded}` : basePath;
-  };
-
   const tokenRouteUrl = (urlFactory, fallbackPath, params) =>
-    urlFactory ? urlFactory(params) : withToken(withQuery(fallbackPath, params));
+    urlFactory ? urlFactory(params) : withToken(`${fallbackPath}${buildQuery(params)}`);
 
   const fileUrl = (rootId, path) =>
     tokenRouteUrl(apiUrls?.file, '/api/file', { root: rootId, path });

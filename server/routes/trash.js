@@ -11,6 +11,12 @@ const { trashRelName, movePath, removeTrashEntry, purgeTrash } = require('../lib
 
 function registerTrashRoutes(fastify, ctx) {
   const { config, db, allRootsId, safeJoin, normalizeRelPath, normalizeParent } = ctx;
+  const selectTrashEntriesByIds = (ids, columns) => {
+    const placeholders = ids.map(() => '?').join(', ');
+    return db.db
+      .prepare(`SELECT ${columns} FROM trash_entries WHERE id IN (${placeholders})`)
+      .all(...ids);
+  };
 
   fastify.get('/api/trash', async (request, reply) => {
     const rootId = request.query.root || allRootsId;
@@ -168,12 +174,7 @@ function registerTrashRoutes(fastify, ctx) {
     if (!ids.length) {
       return sendError(reply, 400, 'invalid_request', 'No items selected');
     }
-    const placeholders = ids.map(() => '?').join(', ');
-    const rows = db.db
-      .prepare(
-        `SELECT id, root_id, rel_path, is_dir, trash_rel_path FROM trash_entries WHERE id IN (${placeholders})`
-      )
-      .all(...ids);
+    const rows = selectTrashEntriesByIds(ids, 'id, root_id, rel_path, is_dir, trash_rel_path');
 
     const results = { restored: 0, skipped: 0, errors: [] };
     for (const entry of rows) {
@@ -229,12 +230,7 @@ function registerTrashRoutes(fastify, ctx) {
     if (!ids.length) {
       return sendError(reply, 400, 'invalid_request', 'No items selected');
     }
-    const placeholders = ids.map(() => '?').join(', ');
-    const rows = db.db
-      .prepare(
-        `SELECT id, root_id, rel_path, is_dir, trash_rel_path FROM trash_entries WHERE id IN (${placeholders})`
-      )
-      .all(...ids);
+    const rows = selectTrashEntriesByIds(ids, 'id, root_id, rel_path, is_dir, trash_rel_path');
 
     const results = { deleted: 0, skipped: 0, errors: [] };
     for (const entry of rows) {
