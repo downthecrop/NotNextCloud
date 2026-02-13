@@ -20,6 +20,20 @@ const ENTRY_DETAIL_COLUMNS = [...ENTRY_COLUMNS, 'inode', 'device'];
 const ENTRY_SELECT = `SELECT ${ENTRY_COLUMNS.join(', ')} FROM entries`;
 const ENTRY_SELECT_WITH_ID = `SELECT id, ${ENTRY_COLUMNS.join(', ')} FROM entries`;
 const ENTRY_DETAIL_SELECT = `SELECT ${ENTRY_DETAIL_COLUMNS.join(', ')} FROM entries`;
+const SCAN_ENTRY_COLUMNS = [
+  'rel_path',
+  'size',
+  'mtime',
+  'is_dir',
+  'inode',
+  'device',
+  'title',
+  'artist',
+  'album',
+  'duration',
+  'album_key',
+];
+const SCAN_ENTRY_SELECT = `SELECT ${SCAN_ENTRY_COLUMNS.join(', ')} FROM entries`;
 const ORDER_NAME = 'ORDER BY is_dir DESC, name COLLATE NOCASE';
 const ORDER_MTIME = 'ORDER BY mtime DESC, name COLLATE NOCASE';
 const ORDER_TRACK_NAME = 'ORDER BY name COLLATE NOCASE';
@@ -132,15 +146,19 @@ function initDb(dbPath) {
       content='entries',
       content_rowid='id'
     );
-    CREATE TRIGGER IF NOT EXISTS entries_ai AFTER INSERT ON entries BEGIN
+    DROP TRIGGER IF EXISTS entries_ai;
+    DROP TRIGGER IF EXISTS entries_ad;
+    DROP TRIGGER IF EXISTS entries_au;
+    CREATE TRIGGER entries_ai AFTER INSERT ON entries BEGIN
       INSERT INTO entries_fts(rowid, name, title, artist, album, root_id, rel_path, mime, is_dir)
       VALUES (new.id, new.name, new.title, new.artist, new.album, new.root_id, new.rel_path, new.mime, new.is_dir);
     END;
-    CREATE TRIGGER IF NOT EXISTS entries_ad AFTER DELETE ON entries BEGIN
+    CREATE TRIGGER entries_ad AFTER DELETE ON entries BEGIN
       INSERT INTO entries_fts(entries_fts, rowid, name, title, artist, album, root_id, rel_path, mime, is_dir)
       VALUES ('delete', old.id, old.name, old.title, old.artist, old.album, old.root_id, old.rel_path, old.mime, old.is_dir);
     END;
-    CREATE TRIGGER IF NOT EXISTS entries_au AFTER UPDATE ON entries BEGIN
+    CREATE TRIGGER entries_au
+    AFTER UPDATE OF name, title, artist, album, root_id, rel_path, mime, is_dir ON entries BEGIN
       INSERT INTO entries_fts(entries_fts, rowid, name, title, artist, album, root_id, rel_path, mime, is_dir)
       VALUES ('delete', old.id, old.name, old.title, old.artist, old.album, old.root_id, old.rel_path, old.mime, old.is_dir);
       INSERT INTO entries_fts(rowid, name, title, artist, album, root_id, rel_path, mime, is_dir)
@@ -587,7 +605,7 @@ function initDb(dbPath) {
   `);
 
   const listScanEntriesByParent = db.prepare(`
-    ${ENTRY_DETAIL_SELECT}
+    ${SCAN_ENTRY_SELECT}
     WHERE root_id = ? AND parent IS ?
   `);
 
@@ -665,6 +683,39 @@ function initDb(dbPath) {
     WHERE root_id = ? AND (rel_path = ? OR rel_path LIKE ?)
   `);
 
+  const deleteAllEntries = db.prepare('DELETE FROM entries');
+  const cleanupOrphanAlbumArt = db.prepare(`
+    DELETE FROM album_art
+    WHERE album_key IS NOT NULL
+      AND album_key != ''
+      AND album_key NOT IN (
+        SELECT DISTINCT album_key
+        FROM entries
+        WHERE album_key IS NOT NULL AND album_key != ''
+      )
+  `);
+  const deleteEntriesOutsideRootsCache = new Map();
+  const pruneRemovedRoots = db.transaction((rootIds = []) => {
+    let removedEntries = 0;
+    if (!Array.isArray(rootIds) || rootIds.length === 0) {
+      removedEntries = deleteAllEntries.run().changes;
+    } else {
+      const key = rootIds.length;
+      let stmt = deleteEntriesOutsideRootsCache.get(key);
+      if (!stmt) {
+        const placeholders = rootIds.map(() => '?').join(', ');
+        stmt = db.prepare(`DELETE FROM entries WHERE root_id NOT IN (${placeholders})`);
+        deleteEntriesOutsideRootsCache.set(key, stmt);
+      }
+      removedEntries = stmt.run(...rootIds).changes;
+    }
+    const removedAlbumArt = cleanupOrphanAlbumArt.run().changes;
+    return {
+      removedEntries,
+      removedAlbumArt,
+    };
+  });
+
   return {
     db,
     ftsEnabled,
@@ -726,6 +777,7 @@ function initDb(dbPath) {
     deleteTrashById,
     deleteEntryByPath,
     deleteEntriesByPrefix,
+    pruneRemovedRoots,
   };
 }
 

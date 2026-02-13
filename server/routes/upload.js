@@ -15,6 +15,7 @@ const {
 } = require('../lib/uploads');
 
 function registerUploadRoutes(fastify, ctx) {
+  const BATCH_STATUS_MAX_ITEMS = 500;
   const { config, indexer, safeJoin, normalizeParent, uploadChunkBytes } = ctx;
   const resolveUploadRoot = (query, reply) => {
     if (!config.uploadEnabled) {
@@ -67,40 +68,63 @@ function registerUploadRoutes(fastify, ctx) {
     return { ok: true, processed };
   }
 
-  fastify.get('/api/upload/status', async (request, reply) => {
-    const resolvedRoot = resolveUploadRoot(request.query, reply);
-    if (!resolvedRoot) {
-      return;
-    }
-    const { rootId, root } = resolvedRoot;
-
-    const { targetRel, error: targetError } = resolveTargetFromQuery(request.query);
+  async function resolveUploadStatus({ rootId, root, params }) {
+    const { targetRel, error: targetError } = resolveTargetFromQuery(params || {});
     if (!targetRel) {
-      return sendError(reply, 400, 'invalid_request', targetError || 'Missing file name');
+      return {
+        ok: false,
+        statusCode: 400,
+        code: 'invalid_request',
+        message: targetError || 'Missing file name',
+      };
     }
 
-    const size = parseSize(request.query.size);
+    const size = parseSize(params?.size);
     if (size === null) {
-      return sendError(reply, 400, 'invalid_request', 'Invalid size');
+      return {
+        ok: false,
+        statusCode: 400,
+        code: 'invalid_request',
+        message: 'Invalid size',
+      };
     }
-    const overwrite = parseBoolean(request.query.overwrite, config.uploadOverwrite);
 
+    const overwrite = parseBoolean(params?.overwrite, config.uploadOverwrite);
     const fullPath = safeJoin(root.absPath, targetRel);
     if (!fullPath) {
-      return sendError(reply, 400, 'invalid_path', 'Invalid path');
+      return {
+        ok: false,
+        statusCode: 400,
+        code: 'invalid_path',
+        message: 'Invalid path',
+      };
     }
 
     if (size === 0) {
       try {
         const result = await ensureEmptyFile(fullPath, overwrite);
         if (!result.ok) {
-          return sendError(reply, 409, 'exists', result.error, { status: 'exists' });
+          return {
+            ok: false,
+            statusCode: 409,
+            code: 'exists',
+            message: result.error,
+            details: { status: 'exists', path: targetRel },
+          };
         }
         await upsertUploadedFile({ db: ctx.db, root, relPath: targetRel, fullPath });
         await indexer.scanPath({ root, relPath: normalizeParent(targetRel), fastScan: true });
-        return sendOk({ status: 'complete', uploadId: null, offset: 0, size });
+        return {
+          ok: true,
+          data: { status: 'complete', uploadId: null, offset: 0, size, path: targetRel },
+        };
       } catch (error) {
-        return sendError(reply, 500, 'upload_failed', 'Failed to create file');
+        return {
+          ok: false,
+          statusCode: 500,
+          code: 'upload_failed',
+          message: 'Failed to create file',
+        };
       }
     }
 
@@ -109,18 +133,41 @@ function registerUploadRoutes(fastify, ctx) {
       existing = await fs.promises.lstat(fullPath);
     } catch (error) {
       if (error.code !== 'ENOENT') {
-        return sendError(reply, 500, 'upload_failed', 'Failed to access target');
+        return {
+          ok: false,
+          statusCode: 500,
+          code: 'upload_failed',
+          message: 'Failed to access target',
+        };
       }
     }
     if (existing) {
       if (existing.isDirectory()) {
-        return sendError(reply, 409, 'exists', 'Target is a directory', { status: 'exists' });
+        return {
+          ok: false,
+          statusCode: 409,
+          code: 'exists',
+          message: 'Target is a directory',
+          details: { status: 'exists', path: targetRel },
+        };
       }
       if (existing.isSymbolicLink()) {
-        return sendError(reply, 409, 'exists', 'Target is a symlink', { status: 'exists' });
+        return {
+          ok: false,
+          statusCode: 409,
+          code: 'exists',
+          message: 'Target is a symlink',
+          details: { status: 'exists', path: targetRel },
+        };
       }
       if (!overwrite) {
-        return sendError(reply, 409, 'exists', 'File already exists', { status: 'exists' });
+        return {
+          ok: false,
+          statusCode: 409,
+          code: 'exists',
+          message: 'File already exists',
+          details: { status: 'exists', path: targetRel },
+        };
       }
     }
 
@@ -133,7 +180,12 @@ function registerUploadRoutes(fastify, ctx) {
       offset = stats.size;
     } catch (error) {
       if (error.code !== 'ENOENT') {
-        return sendError(reply, 500, 'upload_failed', 'Failed to inspect upload');
+        return {
+          ok: false,
+          statusCode: 500,
+          code: 'upload_failed',
+          message: 'Failed to inspect upload',
+        };
       }
     }
 
@@ -156,24 +208,138 @@ function registerUploadRoutes(fastify, ctx) {
           overwrite,
         });
         if (!completed.ok) {
-          return sendError(reply, 409, 'exists', completed.error, { status: 'exists' });
+          return {
+            ok: false,
+            statusCode: 409,
+            code: 'exists',
+            message: completed.error,
+            details: { status: 'exists', path: targetRel },
+          };
         }
         const processed = completed.processed;
-        return sendOk({
-          status: 'complete',
-          uploadId,
-          offset: size,
-          size,
-          path: processed.relPath,
-          compressed: processed.compressed === true,
-          outputFormat: processed.outputFormat || null,
-        });
+        return {
+          ok: true,
+          data: {
+            status: 'complete',
+            uploadId,
+            offset: size,
+            size,
+            path: processed.relPath,
+            compressed: processed.compressed === true,
+            outputFormat: processed.outputFormat || null,
+          },
+        };
       } catch (error) {
-        return sendError(reply, 500, 'upload_failed', 'Failed to finalize upload');
+        return {
+          ok: false,
+          statusCode: 500,
+          code: 'upload_failed',
+          message: 'Failed to finalize upload',
+        };
       }
     }
 
-    return sendOk({ status: 'ready', uploadId, offset, size });
+    return { ok: true, data: { status: 'ready', uploadId, offset, size, path: targetRel } };
+  }
+
+  fastify.get('/api/upload/status', async (request, reply) => {
+    const resolvedRoot = resolveUploadRoot(request.query, reply);
+    if (!resolvedRoot) {
+      return;
+    }
+    const { rootId, root } = resolvedRoot;
+    const statusResult = await resolveUploadStatus({ rootId, root, params: request.query });
+    if (!statusResult.ok) {
+      return sendError(
+        reply,
+        statusResult.statusCode,
+        statusResult.code,
+        statusResult.message,
+        statusResult.details
+      );
+    }
+    return sendOk(statusResult.data);
+  });
+
+  fastify.post('/api/upload/status/batch', async (request, reply) => {
+    const body = request.body && typeof request.body === 'object' ? request.body : {};
+    const resolvedRoot = resolveUploadRoot(body, reply);
+    if (!resolvedRoot) {
+      return;
+    }
+    const { rootId, root } = resolvedRoot;
+    const items = Array.isArray(body.items) ? body.items : [];
+    if (!items.length) {
+      return sendError(reply, 400, 'invalid_request', 'Missing items');
+    }
+    if (items.length > BATCH_STATUS_MAX_ITEMS) {
+      return sendError(
+        reply,
+        400,
+        'invalid_request',
+        `Too many items (max ${BATCH_STATUS_MAX_ITEMS})`
+      );
+    }
+
+    const defaults = {
+      path: body.path,
+      file: body.file,
+      target: body.target,
+      camera: body.camera,
+      cameraMonth: body.cameraMonth,
+      cameraDate: body.cameraDate,
+      capturedAt: body.capturedAt,
+      createdAt: body.createdAt,
+      modifiedAt: body.modifiedAt,
+      lastModified: body.lastModified,
+      overwrite: body.overwrite,
+      size: body.size,
+    };
+
+    const batchResults = [];
+    for (let index = 0; index < items.length; index += 1) {
+      const item = items[index];
+      if (!item || typeof item !== 'object' || Array.isArray(item)) {
+        batchResults.push({
+          index,
+          ok: false,
+          status: 'error',
+          error: { code: 'invalid_request', message: 'Invalid item payload' },
+        });
+        continue;
+      }
+
+      const params = { ...defaults, ...item };
+      const statusResult = await resolveUploadStatus({ rootId, root, params });
+      if (!statusResult.ok) {
+        if (statusResult.code === 'exists') {
+          batchResults.push({
+            index,
+            ok: false,
+            status: 'exists',
+            error: { code: statusResult.code, message: statusResult.message },
+            path: statusResult.details?.path || null,
+          });
+          continue;
+        }
+        batchResults.push({
+          index,
+          ok: false,
+          status: 'error',
+          error: { code: statusResult.code, message: statusResult.message },
+          path: statusResult.details?.path || null,
+        });
+        continue;
+      }
+
+      batchResults.push({
+        index,
+        ok: true,
+        ...statusResult.data,
+      });
+    }
+
+    return sendOk({ items: batchResults });
   });
 
   fastify.post(
@@ -213,6 +379,7 @@ function registerUploadRoutes(fastify, ctx) {
             return sendError(reply, 409, 'exists', result.error, { status: 'exists' });
           }
           await upsertUploadedFile({ db: ctx.db, root, relPath: targetRel, fullPath });
+          await indexer.scanPath({ root, relPath: normalizeParent(targetRel), fastScan: true });
           return sendOk({ offset: 0, complete: true });
         } catch (error) {
           return sendError(reply, 500, 'upload_failed', 'Failed to create file');

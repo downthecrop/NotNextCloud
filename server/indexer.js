@@ -56,7 +56,7 @@ async function processEntry({
   }
   const safeMime = isDir ? null : mimeType || 'application/octet-stream';
   const parent = normalizeParent(relPath);
-  const existingEntry = existing ?? db.getEntry.get(rootId, relPath);
+  const existingEntry = existing === undefined ? db.getEntry.get(rootId, relPath) || null : existing;
   const isSameStat =
     sameStat ??
     (existingEntry &&
@@ -205,7 +205,7 @@ async function scanDirectory(
           continue;
         }
         const { dirent, fullPath, stats, nextRel } = entry;
-        const existing = existingByRelPath.get(nextRel) || null;
+        const existing = existingByRelPath.has(nextRel) ? existingByRelPath.get(nextRel) : null;
         updateProgress(progress, nextRel, stats.isDirectory());
         if (stats.isDirectory()) {
           const entryMtime = Math.floor(stats.mtimeMs);
@@ -579,7 +579,7 @@ function createIndexer(config, db, logger) {
           folderArtMap = await buildFolderArtMapForDir(root.absPath, parentRel, logger);
         }
         const writer = createBatchWriter(db, logger, scanOptions.batchSize, reportError);
-        const existing = db.getEntry.get(root.id, normalized);
+        const existing = db.getEntry.get(root.id, normalized) || null;
         const rootStartAt = Date.now();
         const beforeEntries = progress?.processedEntries || 0;
         const beforeFiles = progress?.processedFiles || 0;

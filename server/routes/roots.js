@@ -2,7 +2,7 @@ const { sendOk, sendError } = require('../lib/response');
 const { formatRootsResponse, sanitizeRootPayload } = require('../lib/roots');
 
 function registerRootsRoutes(fastify, ctx) {
-  const { config, indexer } = ctx;
+  const { config, indexer, db } = ctx;
 
   fastify.get('/api/roots', async () => {
     return sendOk(formatRootsResponse(config.roots));
@@ -24,6 +24,19 @@ function registerRootsRoutes(fastify, ctx) {
       ctx.writeConfigFile(nextConfig);
       const reloaded = ctx.loadConfig(ctx.projectRoot);
       Object.assign(config, reloaded);
+      if (db?.pruneRemovedRoots) {
+        const activeRootIds = config.roots.map((root) => root.id);
+        const pruned = db.pruneRemovedRoots(activeRootIds);
+        if (pruned?.removedEntries || pruned?.removedAlbumArt) {
+          fastify.log.info(
+            {
+              removedEntries: pruned.removedEntries,
+              removedAlbumArt: pruned.removedAlbumArt,
+            },
+            'Pruned metadata for removed roots'
+          );
+        }
+      }
       if (indexer?.scanAll) {
         indexer.scanAll().catch((error) => {
           fastify.log.error({ err: error }, 'Scan after roots update failed');
