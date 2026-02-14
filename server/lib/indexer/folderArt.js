@@ -63,6 +63,7 @@ async function buildFolderArtMapForDir(rootPath, relPath, logger) {
 }
 
 module.exports = {
+  updateFolderArtMap,
   buildFolderArtMapFromDirents,
   buildFolderArtMapForDir,
 };

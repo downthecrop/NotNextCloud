@@ -81,7 +81,13 @@ ensureDir(config.previewDir);
 ensureDir(config.uploadTempDir);
 ensureDir(config.trashDir);
 
-const db = initDb(config.dbPath);
+const db = initDb(config.dbPath, {
+  busyTimeoutMs: config.dbBusyTimeoutMs,
+  synchronous: config.dbSynchronous,
+  cacheSizeKb: config.dbCacheSizeKb,
+  mmapSizeMb: config.dbMmapSizeMb,
+  walAutocheckpointPages: config.dbWalAutocheckpointPages,
+});
 
 const fastify = Fastify({
   logger: {

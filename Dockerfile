@@ -8,7 +8,7 @@ RUN cd clients/web && npm run build
 FROM node:20-slim
 WORKDIR /app
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg \
+    && apt-get install -y --no-install-recommends ffmpeg python3 make g++ \
     && rm -rf /var/lib/apt/lists/*
 COPY server/package.json server/package-lock.json* ./server/
 RUN cd server && npm install --omit=dev

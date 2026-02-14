@@ -51,6 +51,8 @@ function registerScanRoutes(fastify, ctx) {
       scanIntervalSeconds: config.scanIntervalSeconds || 60,
       fastScan: Boolean(config.fastScan),
       scanFsConcurrency: config.scanFsConcurrency || 8,
+      scanPreloadMaxEntriesPerDir: Number(config.scanPreloadMaxEntriesPerDir || 0),
+      scanExtractAudioMetadata: config.scanExtractAudioMetadata !== false,
       fullScanIntervalHours: Number(config.fullScanIntervalHours || 0),
     });
   });
@@ -59,6 +61,11 @@ function registerScanRoutes(fastify, ctx) {
     const scanIntervalSeconds = Math.max(10, parseInt(request.body?.scanIntervalSeconds, 10) || 60);
     const fastScan = request.body?.fastScan !== false;
     const scanFsConcurrency = Math.max(1, parseInt(request.body?.scanFsConcurrency, 10) || 8);
+    const scanPreloadMaxEntriesPerDir = Math.max(
+      0,
+      parseInt(request.body?.scanPreloadMaxEntriesPerDir, 10) || 0
+    );
+    const scanExtractAudioMetadata = request.body?.scanExtractAudioMetadata !== false;
     const fullScanIntervalHours = Math.max(
       0,
       parseInt(request.body?.fullScanIntervalHours, 10) || 0
@@ -68,6 +75,8 @@ function registerScanRoutes(fastify, ctx) {
       nextConfig.scanIntervalSeconds = scanIntervalSeconds;
       nextConfig.fastScan = fastScan;
       nextConfig.scanFsConcurrency = scanFsConcurrency;
+      nextConfig.scanPreloadMaxEntriesPerDir = scanPreloadMaxEntriesPerDir;
+      nextConfig.scanExtractAudioMetadata = scanExtractAudioMetadata;
       nextConfig.fullScanIntervalHours = fullScanIntervalHours;
       ctx.writeConfigFile(nextConfig);
       const reloaded = ctx.loadConfig(ctx.projectRoot);

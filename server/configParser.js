@@ -38,6 +38,9 @@ function loadConfig(projectRoot) {
   const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
   const roots = Array.isArray(config.roots) ? config.roots : [];
   const hostFsRoot = config.hostFsRoot ? resolvePath(projectRoot, config.hostFsRoot) : null;
+  const lowResourceMode = Boolean(config.lowResourceMode);
+  const dbSynchronous = String(config.dbSynchronous || 'NORMAL').toUpperCase();
+  const allowedDbSynchronous = new Set(['OFF', 'NORMAL', 'FULL', 'EXTRA']);
   const uploadCompressionConfig =
     config.uploadMediaCompression && typeof config.uploadMediaCompression === 'object'
       ? config.uploadMediaCompression
@@ -71,18 +74,52 @@ function loadConfig(projectRoot) {
     port: config.port || 4170,
     dbPath: resolvePath(projectRoot, config.dbPath || './data/files.db'),
     previewDir: resolvePath(projectRoot, config.previewDir || './data/previews'),
+    lowResourceMode,
     previewConcurrency: Number.isFinite(config.previewConcurrency)
       ? Math.max(1, config.previewConcurrency)
-      : 2,
+      : lowResourceMode
+        ? 1
+        : 2,
     scanIntervalSeconds: config.scanIntervalSeconds || 60,
     fastScan: Boolean(config.fastScan),
-    scanBatchSize: Number.isFinite(config.scanBatchSize) ? Math.max(1, config.scanBatchSize) : 500,
+    scanBatchSize: Number.isFinite(config.scanBatchSize)
+      ? Math.max(1, config.scanBatchSize)
+      : lowResourceMode
+        ? 200
+        : 500,
     scanFsConcurrency: Number.isFinite(config.scanFsConcurrency)
       ? Math.max(1, config.scanFsConcurrency)
-      : 8,
+      : lowResourceMode
+        ? 2
+        : 8,
+    scanPreloadMaxEntriesPerDir: Number.isFinite(config.scanPreloadMaxEntriesPerDir)
+      ? Math.max(0, Math.floor(config.scanPreloadMaxEntriesPerDir))
+      : lowResourceMode
+        ? 2000
+        : 10000,
+    scanExtractAudioMetadata: config.scanExtractAudioMetadata !== false,
     fullScanIntervalHours: Number.isFinite(config.fullScanIntervalHours)
       ? config.fullScanIntervalHours
       : 0,
+    dbBusyTimeoutMs: Number.isFinite(config.dbBusyTimeoutMs)
+      ? Math.max(0, Math.floor(config.dbBusyTimeoutMs))
+      : 5000,
+    dbSynchronous: allowedDbSynchronous.has(dbSynchronous) ? dbSynchronous : 'NORMAL',
+    dbCacheSizeKb: Number.isFinite(config.dbCacheSizeKb)
+      ? Math.max(1024, Math.floor(config.dbCacheSizeKb))
+      : lowResourceMode
+        ? 32768
+        : 65536,
+    dbMmapSizeMb: Number.isFinite(config.dbMmapSizeMb)
+      ? Math.max(0, Math.floor(config.dbMmapSizeMb))
+      : lowResourceMode
+        ? 64
+        : 256,
+    dbWalAutocheckpointPages: Number.isFinite(config.dbWalAutocheckpointPages)
+      ? Math.max(0, Math.floor(config.dbWalAutocheckpointPages))
+      : lowResourceMode
+        ? 1000
+        : 2000,
     devMode: Boolean(config.devMode),
     uploadEnabled: config.uploadEnabled !== false,
     uploadMaxBytes: Number.isFinite(config.uploadMaxBytes) ? config.uploadMaxBytes : 0,

@@ -5,7 +5,7 @@ const mime = require('mime-types');
 const { normalizeParent, normalizeRelPath } = require('./utils');
 const { createAsyncQueue } = require('./lib/asyncQueue');
 const { createBatchWriter } = require('./lib/indexer/batchWriter');
-const { buildFolderArtMapForDir, buildFolderArtMapFromDirents } = require('./lib/indexer/folderArt');
+const { buildFolderArtMapForDir, updateFolderArtMap } = require('./lib/indexer/folderArt');
 const { enrichAudioEntry } = require('./lib/indexer/audioEnrichment');
 
 function toStatNumber(value) {
@@ -74,6 +74,7 @@ async function processEntry({
     safeMime,
     existingEntry,
     isSameStat,
+    extractMetadata: scanOptions?.extractAudioMetadata !== false,
     fullPath,
     relPath,
     parent,
@@ -134,6 +135,9 @@ async function scanDirectory(
   const fastScan = Boolean(options.fastScan);
   const batchSize = Number.isFinite(options.batchSize) ? options.batchSize : 1;
   const fsConcurrency = Number.isFinite(options.fsConcurrency) ? Math.max(1, options.fsConcurrency) : 1;
+  const preloadMaxEntriesPerDir = Number.isFinite(options.preloadMaxEntriesPerDir)
+    ? Math.max(0, options.preloadMaxEntriesPerDir)
+    : 0;
   const writer = createBatchWriter(db, logger, batchSize, options.reportError);
   const enqueueFs = createAsyncQueue(fsConcurrency);
   const stack = [relPath || ''];
@@ -141,9 +145,9 @@ async function scanDirectory(
   while (stack.length) {
     const currentRel = stack.pop();
     const targetPath = currentRel ? path.join(rootPath, currentRel) : rootPath;
-    let dirents;
+    let dirHandle;
     try {
-      dirents = await fs.promises.readdir(targetPath, { withFileTypes: true });
+      dirHandle = await fs.promises.opendir(targetPath);
     } catch (error) {
       const rel = normalizeRelPath(path.relative(rootPath, targetPath));
       logger?.warn?.({ err: error, relPath: rel }, 'Failed to read directory');
@@ -157,13 +161,19 @@ async function scanDirectory(
       continue;
     }
 
-    const existingByRelPath = new Map();
-    const existingEntries = db.listScanEntriesByParent.all(rootId, currentRel || '');
-    for (const row of existingEntries) {
-      existingByRelPath.set(row.rel_path, row);
+    let existingByRelPath = null;
+    if (preloadMaxEntriesPerDir > 0) {
+      const existingCount = db.countChildren.get(rootId, currentRel || '')?.count || 0;
+      if (existingCount <= preloadMaxEntriesPerDir) {
+        existingByRelPath = new Map();
+        const existingEntries = db.listScanEntriesByParent.all(rootId, currentRel || '');
+        for (const row of existingEntries) {
+          existingByRelPath.set(row.rel_path, row);
+        }
+      }
     }
 
-    const folderArtMap = buildFolderArtMapFromDirents(currentRel, targetPath, dirents);
+    const folderArtMap = new Map();
 
     const resolveDirent = (dirent) =>
       enqueueFs(async () => {
@@ -196,16 +206,23 @@ async function scanDirectory(
       });
 
     const entryBatchSize = Math.max(32, fsConcurrency * 8);
-    for (let index = 0; index < dirents.length; index += entryBatchSize) {
-      const batch = dirents.slice(index, index + entryBatchSize);
-      const resolvedEntries = await Promise.all(batch.map((dirent) => resolveDirent(dirent)));
+    const processDirentBatch = async (batch) => {
+      for (const dirent of batch) {
+        if (dirent.isFile()) {
+          updateFolderArtMap(folderArtMap, currentRel, dirent.name, path.join(targetPath, dirent.name));
+        }
+      }
 
+      const resolvedEntries = await Promise.all(batch.map((dirent) => resolveDirent(dirent)));
       for (const entry of resolvedEntries) {
         if (!entry) {
           continue;
         }
         const { dirent, fullPath, stats, nextRel } = entry;
-        const existing = existingByRelPath.has(nextRel) ? existingByRelPath.get(nextRel) : null;
+        const existing =
+          existingByRelPath !== null
+            ? existingByRelPath.get(nextRel) || null
+            : db.getEntry.get(rootId, nextRel) || null;
         updateProgress(progress, nextRel, stats.isDirectory());
         if (stats.isDirectory()) {
           const entryMtime = Math.floor(stats.mtimeMs);
@@ -240,7 +257,6 @@ async function scanDirectory(
             sameStat,
             writer,
           });
-
           stack.push(nextRel);
           continue;
         }
@@ -260,6 +276,28 @@ async function scanDirectory(
           existing,
           writer,
         });
+      }
+    };
+
+    try {
+      let batch = [];
+      for await (const dirent of dirHandle) {
+        batch.push(dirent);
+        if (batch.length >= entryBatchSize) {
+          await processDirentBatch(batch);
+          batch = [];
+        }
+      }
+      if (batch.length) {
+        await processDirentBatch(batch);
+      }
+    } finally {
+      if (dirHandle) {
+        try {
+          await dirHandle.close();
+        } catch {
+          // opendir handles may already be closed by iterator completion
+        }
       }
     }
   }
@@ -379,6 +417,10 @@ function createIndexer(config, db, logger) {
     fastScan,
     batchSize: Number.isFinite(config.scanBatchSize) ? Math.max(1, config.scanBatchSize) : 1,
     fsConcurrency: Number.isFinite(config.scanFsConcurrency) ? Math.max(1, config.scanFsConcurrency) : 8,
+    preloadMaxEntriesPerDir: Number.isFinite(config.scanPreloadMaxEntriesPerDir)
+      ? Math.max(0, config.scanPreloadMaxEntriesPerDir)
+      : 0,
+    extractAudioMetadata: config.scanExtractAudioMetadata !== false,
     albumArtCache: new Map(),
     reportError,
   });

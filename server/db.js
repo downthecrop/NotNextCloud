@@ -58,9 +58,40 @@ function entrySelectSql({ where, order, withPrefix = false }) {
   return `${ENTRY_SELECT} WHERE root_id = ? AND ${where}${prefixClause} ${order}`;
 }
 
-function initDb(dbPath) {
+function initDb(dbPath, options = {}) {
   const db = new Database(dbPath);
+  const busyTimeoutMs = Number.isFinite(options.busyTimeoutMs)
+    ? Math.max(0, Math.floor(options.busyTimeoutMs))
+    : 5000;
+  const cacheSizeKb = Number.isFinite(options.cacheSizeKb)
+    ? Math.max(0, Math.floor(options.cacheSizeKb))
+    : 0;
+  const mmapSizeMb = Number.isFinite(options.mmapSizeMb)
+    ? Math.max(0, Math.floor(options.mmapSizeMb))
+    : 0;
+  const walAutocheckpointPages = Number.isFinite(options.walAutocheckpointPages)
+    ? Math.max(0, Math.floor(options.walAutocheckpointPages))
+    : 0;
+  const synchronous = ['OFF', 'NORMAL', 'FULL', 'EXTRA'].includes(
+    String(options.synchronous || '').toUpperCase()
+  )
+    ? String(options.synchronous).toUpperCase()
+    : 'NORMAL';
+
   db.pragma('journal_mode = WAL');
+  db.pragma(`busy_timeout = ${busyTimeoutMs}`);
+  db.pragma(`synchronous = ${synchronous}`);
+  db.pragma('temp_store = MEMORY');
+  db.pragma('journal_size_limit = 67108864');
+  if (cacheSizeKb > 0) {
+    db.pragma(`cache_size = -${cacheSizeKb}`);
+  }
+  if (mmapSizeMb > 0) {
+    db.pragma(`mmap_size = ${mmapSizeMb * 1024 * 1024}`);
+  }
+  if (walAutocheckpointPages > 0) {
+    db.pragma(`wal_autocheckpoint = ${walAutocheckpointPages}`);
+  }
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS entries (

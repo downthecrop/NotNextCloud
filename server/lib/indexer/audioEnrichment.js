@@ -85,6 +85,7 @@ async function enrichAudioEntry({
   safeMime,
   existingEntry,
   isSameStat,
+  extractMetadata = true,
   fullPath,
   relPath,
   parent,
@@ -120,7 +121,7 @@ async function enrichAudioEntry({
     albumKey = existingEntry.album_key;
   } else {
     const metadataLib = await getMusicMetadata();
-    if (metadataLib) {
+    if (extractMetadata && metadataLib) {
       try {
         const metadata = await metadataLib.parseFile(fullPath, { duration: true });
         const common = metadata.common || {};
