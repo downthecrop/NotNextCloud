@@ -124,6 +124,11 @@ function loadConfig(projectRoot) {
     uploadEnabled: config.uploadEnabled !== false,
     uploadMaxBytes: Number.isFinite(config.uploadMaxBytes) ? config.uploadMaxBytes : 0,
     uploadMaxFiles: Number.isFinite(config.uploadMaxFiles) ? config.uploadMaxFiles : 0,
+    zipMaxPaths: Number.isFinite(config.zipMaxPaths)
+      ? Math.max(1, Math.floor(config.zipMaxPaths))
+      : lowResourceMode
+        ? 5000
+        : 10000,
     uploadTempDir: resolvePath(projectRoot, config.uploadTempDir || './data/uploads'),
     uploadOverwrite: Boolean(config.uploadOverwrite),
     uploadCameraBasePath:

@@ -28,7 +28,10 @@ function registerInfoRoutes(fastify, ctx) {
           enabled: true,
           concurrency: config.previewConcurrency || 1,
         },
-        zip: true,
+        zip: {
+          enabled: true,
+          maxPaths: config.zipMaxPaths || 10000,
+        },
         pagination: {
           cursor: true,
           includeTotal: true,

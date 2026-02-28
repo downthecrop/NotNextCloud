@@ -6,12 +6,18 @@ const { getRootById } = require('../lib/roots');
 
 function registerZipRoutes(fastify, ctx) {
   const { config, safeJoin, normalizeRelPath } = ctx;
+  const maxPaths = Number.isFinite(config.zipMaxPaths)
+    ? Math.max(1, Math.floor(config.zipMaxPaths))
+    : 10000;
 
   fastify.post('/api/zip', async (request, reply) => {
     const { root: rootId, paths, flatten } = request.body || {};
     const root = getRootById(config.roots, rootId);
     if (!root || !Array.isArray(paths) || paths.length === 0) {
       return sendError(reply, 400, 'invalid_request', 'Invalid request');
+    }
+    if (paths.length > maxPaths) {
+      return sendError(reply, 413, 'too_many_paths', `Too many paths (max ${maxPaths})`);
     }
 
     reply.header('Content-Type', 'application/zip');

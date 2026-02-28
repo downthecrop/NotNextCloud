@@ -17,6 +17,12 @@ const {
 function registerUploadRoutes(fastify, ctx) {
   const BATCH_STATUS_MAX_ITEMS = 500;
   const { config, indexer, safeJoin, normalizeParent, uploadChunkBytes } = ctx;
+  const maxUploadBytes = Number.isFinite(config.uploadMaxBytes)
+    ? Math.max(0, Math.floor(config.uploadMaxBytes))
+    : 0;
+  const maxUploadFiles = Number.isFinite(config.uploadMaxFiles)
+    ? Math.max(0, Math.floor(config.uploadMaxFiles))
+    : 0;
   const resolveUploadRoot = (query, reply) => {
     if (!config.uploadEnabled) {
       sendError(reply, 403, 'upload_disabled', 'Uploads are disabled.');
@@ -86,6 +92,14 @@ function registerUploadRoutes(fastify, ctx) {
         statusCode: 400,
         code: 'invalid_request',
         message: 'Invalid size',
+      };
+    }
+    if (maxUploadBytes > 0 && size > maxUploadBytes) {
+      return {
+        ok: false,
+        statusCode: 413,
+        code: 'file_too_large',
+        message: `File exceeds upload limit (${maxUploadBytes} bytes)`,
       };
     }
 
@@ -280,6 +294,14 @@ function registerUploadRoutes(fastify, ctx) {
         `Too many items (max ${BATCH_STATUS_MAX_ITEMS})`
       );
     }
+    if (maxUploadFiles > 0 && items.length > maxUploadFiles) {
+      return sendError(
+        reply,
+        413,
+        'too_many_files',
+        `Too many files for one batch (max ${maxUploadFiles})`
+      );
+    }
 
     const defaults = {
       path: body.path,
@@ -360,6 +382,14 @@ function registerUploadRoutes(fastify, ctx) {
       const size = parseSize(request.query.size);
       if (size === null) {
         return sendError(reply, 400, 'invalid_request', 'Invalid size');
+      }
+      if (maxUploadBytes > 0 && size > maxUploadBytes) {
+        return sendError(
+          reply,
+          413,
+          'file_too_large',
+          `File exceeds upload limit (${maxUploadBytes} bytes)`
+        );
       }
       const offset = parseSize(request.query.offset);
       if (offset === null) {

@@ -18,6 +18,24 @@ function albumKeyFor(artist, album) {
 function registerFileRoutes(fastify, ctx) {
   const { config, db, previewCachePath, ensurePreview, previewQueue, safeJoin, normalizeRelPath } =
     ctx;
+  const statFileIfNotSymlink = async (fullPath) => {
+    let linkStats;
+    try {
+      linkStats = await fs.promises.lstat(fullPath);
+    } catch {
+      return { missing: true };
+    }
+    if (linkStats.isSymbolicLink()) {
+      return { symlink: true };
+    }
+    let stats;
+    try {
+      stats = await fs.promises.stat(fullPath);
+    } catch {
+      return { missing: true };
+    }
+    return { stats };
+  };
   const resolveRootAndPath = (query, reply) =>
     resolveRootPathOrReply({
       roots: config.roots,
@@ -35,11 +53,12 @@ function registerFileRoutes(fastify, ctx) {
     }
     const { relPath, fullPath } = resolved;
 
-    let stats;
-    try {
-      stats = await fs.promises.stat(fullPath);
-    } catch (error) {
+    const { stats, missing, symlink } = await statFileIfNotSymlink(fullPath);
+    if (missing) {
       return sendError(reply, 404, 'not_found', 'Not found');
+    }
+    if (symlink) {
+      return sendError(reply, 400, 'invalid_path', 'Symlinks are not supported');
     }
 
     if (stats.isDirectory()) {
@@ -75,6 +94,14 @@ function registerFileRoutes(fastify, ctx) {
     const isVideo = mimeType.startsWith('video/');
     if (!isImage && !isVideo) {
       return sendError(reply, 415, 'unsupported_media', 'Preview only available for images/videos');
+    }
+
+    const { stats, missing, symlink } = await statFileIfNotSymlink(fullPath);
+    if (missing || !stats?.isFile()) {
+      return sendError(reply, 404, 'not_found', 'Not found');
+    }
+    if (symlink) {
+      return sendError(reply, 400, 'invalid_path', 'Symlinks are not supported');
     }
 
     const previewPath = previewCachePath(config.previewDir, rootId, relPath, entry.mtime);
@@ -122,11 +149,12 @@ function registerFileRoutes(fastify, ctx) {
     if (!art || !art.path) {
       return sendError(reply, 404, 'not_found', 'Not found');
     }
-    let artStats;
-    try {
-      artStats = await fs.promises.stat(art.path);
-    } catch {
+    const { stats: artStats, missing, symlink } = await statFileIfNotSymlink(art.path);
+    if (missing) {
       return sendError(reply, 404, 'not_found', 'Not found');
+    }
+    if (symlink) {
+      return sendError(reply, 400, 'invalid_path', 'Symlinks are not supported');
     }
     if (!artStats.isFile()) {
       return sendError(reply, 404, 'not_found', 'Not found');
