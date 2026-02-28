@@ -1,0 +1,53 @@
+{
+  "host": "0.0.0.0",
+  "port": 4170,
+  "dbPath": "./data/files.db",
+  "previewDir": "./data/previews",
+  "uploadTempDir": "./data/uploads",
+  "trashDir": "./data/trash",
+  "hostFsRoot": "/host",
+  "lowResourceMode": true,
+  "scanIntervalSeconds": 3600,
+  "fastScan": true,
+  "scanBatchSize": 200,
+  "scanFsConcurrency": 2,
+  "scanPreloadMaxEntriesPerDir": 0,
+  "scanExtractAudioMetadata": true,
+  "fullScanIntervalHours": 24,
+  "previewConcurrency": 1,
+  "dbBusyTimeoutMs": 5000,
+  "dbSynchronous": "NORMAL",
+  "dbCacheSizeKb": 32768,
+  "dbMmapSizeMb": 64,
+  "dbWalAutocheckpointPages": 1000,
+  "devMode": false,
+  "allowQueryToken": false,
+  "uploadEnabled": true,
+  "uploadMaxBytes": 0,
+  "uploadMaxFiles": 0,
+  "zipMaxPaths": 5000,
+  "uploadOverwrite": false,
+  "uploadCameraBasePath": "Camera Uploads",
+  "uploadMediaCompression": {
+    "enabled": false,
+    "imageAvifQuality": 50,
+    "imageAvifEffort": 4,
+    "videoCrf": 28,
+    "videoPreset": "medium",
+    "audioOpusBitrateKbps": 96
+  },
+  "trashRetentionDays": 30,
+  "sessionTtlHours": 24,
+  "sessionCookieName": "lc_token",
+  "roots": [
+    {
+      "id": "media",
+      "path": "/mnt/media",
+      "name": "Media"
+    }
+  ],
+  "auth": {
+    "user": "change-me",
+    "pass": "change-me"
+  }
+}

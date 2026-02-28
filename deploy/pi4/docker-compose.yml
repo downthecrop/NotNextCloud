@@ -1,0 +1,11 @@
+services:
+  local-cloud:
+    container_name: notnextcloud2-local-cloud
+    build: .
+    restart: unless-stopped
+    ports:
+      - "${LOCAL_CLOUD_PORT:-4170}:4170"
+    volumes:
+      - ./config.json:/app/config.json
+      - ./data:/app/data
+      - ${HOST_FS_ROOT:-/}:/host:ro
