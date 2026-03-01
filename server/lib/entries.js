@@ -1,3 +1,21 @@
+const mime = require('mime-types');
+
+function normalizeMimeValue(row) {
+  if (!row || row.is_dir) {
+    return null;
+  }
+  const rawMime = typeof row.mime === 'string' ? row.mime : null;
+  if (rawMime && rawMime !== 'application/octet-stream') {
+    return rawMime;
+  }
+  const ext = typeof row.ext === 'string' ? row.ext.toLowerCase() : '';
+  let fallback = ext ? mime.lookup(ext) : null;
+  if (!fallback && ext === '.opus') {
+    fallback = 'audio/opus';
+  }
+  return fallback || rawMime || 'application/octet-stream';
+}
+
 function toEntry(row) {
   if (!row) {
     return null;
@@ -8,7 +26,7 @@ function toEntry(row) {
     name: row.name,
     size: row.size,
     mtime: row.mtime,
-    mime: row.mime,
+    mime: normalizeMimeValue(row),
     ext: row.ext,
     isDir: Boolean(row.is_dir),
     title: row.title || null,

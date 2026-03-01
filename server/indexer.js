@@ -27,6 +27,78 @@ function updateProgress(progress, relPath, isDir) {
   }
 }
 
+function hasMissingOrZeroDuration(value) {
+  if (value === null || value === undefined) {
+    return true;
+  }
+  if (value === 0) {
+    return true;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return true;
+    }
+    const parsed = Number(trimmed);
+    return !Number.isFinite(parsed) || parsed <= 0;
+  }
+  if (typeof value === 'number') {
+    return !Number.isFinite(value) || value <= 0;
+  }
+  return false;
+}
+
+function hasTrimMismatch(value) {
+  return typeof value === 'string' && value.trim() !== value;
+}
+
+function needsAudioMetadataBackfill({ existingEntry, isSameStat, safeMime, scanOptions }) {
+  if (!existingEntry || !isSameStat) {
+    return false;
+  }
+  if (!safeMime || !safeMime.startsWith('audio/')) {
+    return false;
+  }
+  if (scanOptions?.extractAudioMetadata === false) {
+    return false;
+  }
+  if (
+    !existingEntry.title ||
+    !existingEntry.artist ||
+    !existingEntry.album ||
+    !existingEntry.album_key ||
+    hasTrimMismatch(existingEntry.title) ||
+    hasTrimMismatch(existingEntry.artist) ||
+    hasTrimMismatch(existingEntry.album)
+  ) {
+    return true;
+  }
+  return hasMissingOrZeroDuration(existingEntry.duration);
+}
+
+function buildAudioBackfillDirSet(db, rootId) {
+  if (!db?.listAudioBackfillParents) {
+    return null;
+  }
+  const rows = db.listAudioBackfillParents.all(rootId);
+  if (!Array.isArray(rows) || !rows.length) {
+    return null;
+  }
+  const dirs = new Set();
+  for (const row of rows) {
+    let current = typeof row?.parent === 'string' ? row.parent : '';
+    while (true) {
+      dirs.add(current);
+      if (!current) {
+        break;
+      }
+      const slash = current.lastIndexOf('/');
+      current = slash === -1 ? '' : current.slice(0, slash);
+    }
+  }
+  return dirs;
+}
+
 
 async function processEntry({
   rootId,
@@ -65,6 +137,13 @@ async function processEntry({
       existingEntry.is_dir === (isDir ? 1 : 0) &&
       (existingEntry.inode ?? null) === entryInode &&
       (existingEntry.device ?? null) === entryDevice);
+  const shouldBackfillAudioMetadata = needsAudioMetadataBackfill({
+    existingEntry,
+    isSameStat,
+    safeMime,
+    scanOptions,
+  });
+  const reuseExistingMetadata = isSameStat && !shouldBackfillAudioMetadata;
   let title = null;
   let artist = null;
   let album = null;
@@ -73,7 +152,7 @@ async function processEntry({
   ({ title, artist, album, duration, albumKey } = await enrichAudioEntry({
     safeMime,
     existingEntry,
-    isSameStat,
+    isSameStat: reuseExistingMetadata,
     extractMetadata: scanOptions?.extractAudioMetadata !== false,
     fullPath,
     relPath,
@@ -86,7 +165,7 @@ async function processEntry({
     logger,
   }));
 
-  if (isSameStat && (!isDir || existingEntry)) {
+  if (reuseExistingMetadata && (!isDir || existingEntry)) {
     if (writer) {
       writer.enqueue(() => db.touchEntry.run(scanId, rootId, relPath));
     } else {
@@ -236,7 +315,8 @@ async function scanDirectory(
             (existing.inode ?? null) === entryInode &&
             (existing.device ?? null) === entryDevice;
 
-          if (fastScan && sameStat) {
+          const shouldForceScanDir = options.audioBackfillDirs?.has(nextRel);
+          if (fastScan && sameStat && !shouldForceScanDir) {
             db.touchPrefix.run(scanId, rootId, nextRel, `${nextRel}/%`);
             continue;
           }
@@ -362,6 +442,11 @@ async function scanRoot(root, scanId, db, logger, previewDir, scanOptions, progr
   updateProgress(progress, '', rootStats.isDirectory());
 
   if (rootStats.isDirectory()) {
+    if (scanOptions?.fastScan && scanOptions?.extractAudioMetadata !== false) {
+      scanOptions.audioBackfillDirs = buildAudioBackfillDirSet(db, root.id);
+    } else if (scanOptions) {
+      scanOptions.audioBackfillDirs = null;
+    }
     const albumArtDir = previewDir ? path.join(previewDir, 'album-art') : null;
     await scanDirectory(
       root.id,
@@ -596,6 +681,9 @@ function createIndexer(config, db, logger) {
       onRun: async () => {
         setProgressRoot(root, 1, relPath || '');
         const scanOptions = createScanOptions(fastScan);
+        if (scanOptions.fastScan && scanOptions.extractAudioMetadata !== false) {
+          scanOptions.audioBackfillDirs = buildAudioBackfillDirSet(db, root.id);
+        }
         const normalized = relPath || '';
         const targetPath = path.join(root.absPath, normalized);
         let stats;

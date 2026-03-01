@@ -186,6 +186,14 @@ function createLibraryListRouteHandler({
       if (includeTotal) {
         total = db.countChildren.get(rootId, relPath)?.count || 0;
       }
+      if (rows.length === limit) {
+        const last = rows[rows.length - 1];
+        nextCursor = encodeCursor({
+          isDir: last.is_dir,
+          name: last.name,
+          path: last.rel_path,
+        });
+      }
     }
     const items = toEntryList(rows);
     const usedCursor = useRawOrder ? Boolean(rawCursor) : Boolean(cursor);

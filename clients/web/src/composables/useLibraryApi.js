@@ -3,10 +3,10 @@ import { useApi } from './useApi';
 export function useLibraryApi() {
   const { apiJson, apiUrls } = useApi();
 
-  const request = (urlFactory, params) => apiJson(urlFactory(params));
+  const request = (urlFactory, params, options) => apiJson(urlFactory(params), options);
   const withPathPrefix = (pathPrefix) => (pathPrefix ? { pathPrefix } : {});
-  const requestWithRoot = (urlFactory, { rootId, pathPrefix, ...params }) =>
-    request(urlFactory, { root: rootId, ...withPathPrefix(pathPrefix), ...params });
+  const requestWithRoot = (urlFactory, { rootId, pathPrefix, ...params }, options) =>
+    request(urlFactory, { root: rootId, ...withPathPrefix(pathPrefix), ...params }, options);
 
   const withPage = ({ limit = 50, offset = 0, cursor = null, includeTotal = true }) => {
     const base = cursor ? { limit, cursor } : { limit, offset };
@@ -16,13 +16,13 @@ export function useLibraryApi() {
     return base;
   };
 
-  const requestPaged = (urlFactory, options) =>
+  const requestPaged = (urlFactory, options, fetchOptions) =>
     request(urlFactory, {
       root: options.rootId,
       ...withPathPrefix(options.pathPrefix),
       ...withPage(options),
       ...options.extra,
-    });
+    }, fetchOptions);
 
   const listDirectory = ({
     rootId,
@@ -51,6 +51,7 @@ export function useLibraryApi() {
     offset = 0,
     cursor = null,
     includeTotal = true,
+    signal,
   }) =>
     requestPaged(apiUrls.search, {
       rootId,
@@ -60,7 +61,7 @@ export function useLibraryApi() {
       cursor,
       includeTotal,
       extra: { q: query, type },
-    });
+    }, signal ? { signal } : undefined);
 
   const listMedia = ({
     rootId,

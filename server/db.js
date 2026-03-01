@@ -38,7 +38,11 @@ const ORDER_NAME = 'ORDER BY is_dir DESC, name COLLATE NOCASE';
 const ORDER_MTIME = 'ORDER BY mtime DESC, name COLLATE NOCASE';
 const ORDER_TRACK_NAME = 'ORDER BY name COLLATE NOCASE';
 const ORDER_ARTIST_TRACK = 'ORDER BY album COLLATE NOCASE, name COLLATE NOCASE';
-const WHERE_PHOTOS = "is_dir = 0 AND (mime LIKE 'image/%' OR mime LIKE 'video/%')";
+const WHERE_PHOTOS = `is_dir = 0 AND (
+  mime LIKE 'image/%'
+  OR mime LIKE 'video/%'
+  OR ext IN ('.avif', '.heic', '.heif', '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.tif', '.tiff', '.mp4', '.mov', '.m4v', '.webm', '.avi', '.mkv')
+)`;
 const WHERE_MUSIC = "is_dir = 0 AND mime LIKE 'audio/%'";
 const WHERE_MUSIC_SEARCH =
   "(name LIKE ? OR title LIKE ? OR artist LIKE ? OR album LIKE ?) AND mime LIKE 'audio/%'";
@@ -640,6 +644,29 @@ function initDb(dbPath, options = {}) {
     WHERE root_id = ? AND parent IS ?
   `);
 
+  const listAudioBackfillParents = db.prepare(`
+    SELECT DISTINCT parent
+    FROM entries
+    WHERE root_id = ?
+      AND is_dir = 0
+      AND mime LIKE 'audio/%'
+      AND (
+        duration IS NULL
+        OR duration <= 0
+        OR title IS NULL
+        OR title = ''
+        OR title != TRIM(title)
+        OR artist IS NULL
+        OR artist = ''
+        OR artist != TRIM(artist)
+        OR album IS NULL
+        OR album = ''
+        OR album != TRIM(album)
+        OR album_key IS NULL
+        OR album_key = ''
+      )
+  `);
+
   const touchEntry = db.prepare(`
     UPDATE entries
     SET scan_id = ?
@@ -795,6 +822,7 @@ function initDb(dbPath, options = {}) {
     getAlbumArt,
     getEntry,
     listScanEntriesByParent,
+    listAudioBackfillParents,
     touchEntry,
     touchPrefix,
     touchAll,

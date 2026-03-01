@@ -33,6 +33,17 @@ function albumKeyFor(artist, album) {
     .digest('hex');
 }
 
+function normalizeMetadataText(value) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return '';
+  }
+  return trimmed.replace(/\s+/g, ' ');
+}
+
 async function ensureDir(targetPath) {
   if (!targetPath) {
     return;
@@ -81,6 +92,32 @@ function getAlbumArtPresence({ db, albumKey, albumArtCache }) {
   return exists;
 }
 
+function normalizeDurationSeconds(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return null;
+  }
+  return numeric;
+}
+
+function resolveAudioDuration(format) {
+  const direct = normalizeDurationSeconds(format?.duration);
+  if (direct !== null) {
+    return direct;
+  }
+  const sampleRate = Number(format?.sampleRate);
+  const numberOfSamples = Number(format?.numberOfSamples);
+  if (Number.isFinite(sampleRate) && sampleRate > 0 && Number.isFinite(numberOfSamples) && numberOfSamples > 0) {
+    return normalizeDurationSeconds(numberOfSamples / sampleRate);
+  }
+  const bitrate = Number(format?.bitrate);
+  const size = Number(format?.size);
+  if (Number.isFinite(bitrate) && bitrate > 0 && Number.isFinite(size) && size > 0) {
+    return normalizeDurationSeconds((size * 8) / bitrate);
+  }
+  return null;
+}
+
 async function enrichAudioEntry({
   safeMime,
   existingEntry,
@@ -127,13 +164,19 @@ async function enrichAudioEntry({
         const common = metadata.common || {};
         const rawTitle = common.title || '';
         const rawArtist = common.artist || (Array.isArray(common.artists) ? common.artists[0] : '');
+        const rawAlbumArtist =
+          common.albumartist || (Array.isArray(common.albumartists) ? common.albumartists[0] : '');
         const rawAlbum = common.album || '';
         const parentFolder = parent ? path.basename(parent) : '';
-        title = rawTitle || path.parse(name).name;
-        artist = rawArtist || 'Unknown Artist';
-        album = rawAlbum || parentFolder || 'Unknown Album';
-        duration = metadata.format?.duration || null;
-        albumKey = albumKeyFor(artist, album);
+        const normalizedTitle = normalizeMetadataText(rawTitle);
+        const normalizedArtist = normalizeMetadataText(rawArtist);
+        const normalizedAlbumArtist = normalizeMetadataText(rawAlbumArtist);
+        const normalizedAlbum = normalizeMetadataText(rawAlbum);
+        title = normalizedTitle || path.parse(name).name;
+        artist = normalizedArtist || normalizedAlbumArtist || 'Unknown Artist';
+        album = normalizedAlbum || parentFolder || 'Unknown Album';
+        duration = resolveAudioDuration(metadata.format);
+        albumKey = albumKeyFor(normalizedAlbumArtist || artist, album);
 
         if (Array.isArray(common.picture) && common.picture.length && albumKey) {
           const hasArt = getAlbumArtPresence({ db, albumKey, albumArtCache });

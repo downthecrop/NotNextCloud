@@ -75,7 +75,11 @@ sync_bundle() {
   echo "Installing bundle into $APP_DIR ..."
   run_as_root mkdir -p "$APP_DIR"
   if command -v rsync >/dev/null 2>&1; then
-    run_as_root rsync -a --delete "$SCRIPT_DIR/" "$APP_DIR/"
+    run_as_root rsync -a --delete \
+      --exclude 'data/' \
+      --exclude 'config.json' \
+      --exclude '.env' \
+      "$SCRIPT_DIR/" "$APP_DIR/"
   else
     tar -C "$SCRIPT_DIR" -cf - . | run_as_root tar -C "$APP_DIR" -xf -
   fi

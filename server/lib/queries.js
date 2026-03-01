@@ -1,4 +1,9 @@
 const statementCache = new WeakMap();
+const PHOTO_EXT_FALLBACK =
+  "('.avif', '.heic', '.heif', '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.tif', '.tiff', '.mp4', '.mov', '.m4v', '.webm', '.avi', '.mkv')";
+const PHOTOS_FILTER = `(mime LIKE 'image/%' OR mime LIKE 'video/%' OR ext IN ${PHOTO_EXT_FALLBACK})`;
+const PHOTOS_FILTER_ENTRIES =
+  `(entries.mime LIKE 'image/%' OR entries.mime LIKE 'video/%' OR entries.ext IN ${PHOTO_EXT_FALLBACK})`;
 
 function prepareCached(db, sql) {
   let cache = statementCache.get(db);
@@ -18,9 +23,7 @@ function listMediaAll({ db, entrySelect, rootIds, type, prefixLike, limit, offse
   if (!rootIds.length) {
     return { rows: [], total: includeTotal === false ? null : 0 };
   }
-  const typeFilter = type === 'photos'
-    ? "(mime LIKE 'image/%' OR mime LIKE 'video/%')"
-    : "mime LIKE 'audio/%'";
+  const typeFilter = type === 'photos' ? PHOTOS_FILTER : "mime LIKE 'audio/%'";
   const placeholders = rootIds.map(() => '?').join(', ');
   const rootClause = `root_id IN (${placeholders})`;
   const prefixClause = prefixLike ? ' AND rel_path LIKE ?' : '';
@@ -278,9 +281,7 @@ function listMediaAllCursor({
   if (!rootIds.length) {
     return { rows: [], total: includeTotal === false ? null : 0 };
   }
-  const typeFilter = type === 'photos'
-    ? "(mime LIKE 'image/%' OR mime LIKE 'video/%')"
-    : "mime LIKE 'audio/%'";
+  const typeFilter = type === 'photos' ? PHOTOS_FILTER : "mime LIKE 'audio/%'";
   const placeholders = rootIds.map(() => '?').join(', ');
   const rootClause = `root_id IN (${placeholders})`;
   const prefixClause = prefixLike ? ' AND rel_path LIKE ?' : '';
@@ -326,8 +327,11 @@ function buildFtsQuery(query, fields) {
     return '';
   }
   return terms
-    .map((term) => {
-      const clauses = fields.map((field) => `${field}:${term}*`);
+    .map((term, index) => {
+      // Keep prefix matching only on the final term for "type-ahead" behavior.
+      // Prior terms use exact-token matches to reduce large intermediate expansions.
+      const suffix = index === terms.length - 1 ? '*' : '';
+      const clauses = fields.map((field) => `${field}:${term}${suffix}`);
       if (clauses.length === 1) {
         return clauses[0];
       }
@@ -358,7 +362,7 @@ function searchFtsAll({
   let typeClause = '';
   let orderBy = 'ORDER BY entries.is_dir DESC, entries.name COLLATE NOCASE';
   if (type === 'photos') {
-    typeClause = " AND entries.is_dir = 0 AND (entries.mime LIKE 'image/%' OR entries.mime LIKE 'video/%')";
+    typeClause = ` AND entries.is_dir = 0 AND ${PHOTOS_FILTER_ENTRIES}`;
     orderBy = 'ORDER BY entries.mtime DESC, entries.name COLLATE NOCASE';
   } else if (type === 'music') {
     typeClause = " AND entries.is_dir = 0 AND entries.mime LIKE 'audio/%'";
@@ -409,8 +413,7 @@ function searchFtsAllCursor({
   let typeClause = '';
   let orderBy = 'ORDER BY entries.is_dir DESC, entries.name COLLATE NOCASE, entries.root_id, entries.rel_path';
   if (type === 'photos') {
-    typeClause =
-      " AND entries.is_dir = 0 AND (entries.mime LIKE 'image/%' OR entries.mime LIKE 'video/%')";
+    typeClause = ` AND entries.is_dir = 0 AND ${PHOTOS_FILTER_ENTRIES}`;
     orderBy = 'ORDER BY entries.mtime DESC, entries.name COLLATE NOCASE, entries.root_id, entries.rel_path';
   } else if (type === 'music') {
     typeClause = " AND entries.is_dir = 0 AND entries.mime LIKE 'audio/%'";
@@ -476,7 +479,7 @@ function searchAll({
   let where = '';
   let params = [];
   if (type === 'photos') {
-    where = `${rootClause} AND name LIKE ? AND (mime LIKE 'image/%' OR mime LIKE 'video/%')${prefixClause}`;
+    where = `${rootClause} AND name LIKE ? AND ${PHOTOS_FILTER}${prefixClause}`;
     params = [...rootIds, like];
   } else if (type === 'music') {
     where = `${rootClause} AND (name LIKE ? OR title LIKE ? OR artist LIKE ? OR album LIKE ?) AND mime LIKE 'audio/%'${prefixClause}`;
@@ -530,7 +533,7 @@ function searchAllCursor({
   let baseParams = [];
   let orderBy = 'ORDER BY is_dir DESC, name COLLATE NOCASE, root_id, rel_path';
   if (type === 'photos') {
-    baseWhere = `${rootClause} AND name LIKE ? AND (mime LIKE 'image/%' OR mime LIKE 'video/%')${prefixClause}`;
+    baseWhere = `${rootClause} AND name LIKE ? AND ${PHOTOS_FILTER}${prefixClause}`;
     baseParams = [...rootIds, like];
     orderBy = 'ORDER BY mtime DESC, name COLLATE NOCASE, root_id, rel_path';
   } else if (type === 'music') {

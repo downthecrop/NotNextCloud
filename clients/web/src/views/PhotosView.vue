@@ -81,6 +81,7 @@ const {
 const selectedAlbumId = ref(null);
 const jumpTarget = ref(null);
 const requestVersion = ref(0);
+let searchAbortController = null;
 const startDate = ref('');
 const endDate = ref('');
 const {
@@ -203,6 +204,13 @@ function sortPhotos(list) {
 }
 
 const modalItems = computed(() => (isAlbumDetail.value ? sortedAlbumItems.value : sortedItems.value));
+const photosMeta = computed(() => {
+  const totalValue = isSearchMode.value ? searchTotal.value : total.value;
+  if (Number.isFinite(totalValue) && totalValue >= 0) {
+    return `${sortedItems.value.length} of ${totalValue}`;
+  }
+  return `${sortedItems.value.length}`;
+});
 
 const timelineGroups = computed(() => {
   const groups = [];
@@ -470,10 +478,21 @@ async function runSearch({ reset = true } = {}) {
     return;
   }
   const query = searchQuery.value.trim();
+  if (searchAbortController) {
+    searchAbortController.abort();
+    searchAbortController = null;
+  }
   if (!query) {
     resetPagedState({ items: searchResults, total: searchTotal, offset: searchOffset, cursor: searchCursor });
     return;
   }
+  const signal =
+    typeof AbortController === 'undefined'
+      ? null
+      : (() => {
+          searchAbortController = new AbortController();
+          return searchAbortController.signal;
+        })();
   await loadPaged({
     reset,
     items: searchResults,
@@ -492,6 +511,7 @@ async function runSearch({ reset = true } = {}) {
         cursor: pageCursor,
         pathPrefix: activePinPath.value || undefined,
         includeTotal: false,
+        signal,
       }),
   });
 }
@@ -639,7 +659,7 @@ watch(
             <strong>{{ selectedAlbum ? selectedAlbum.name : 'Photos' }}</strong>
             <span class="meta" v-if="selectedAlbum"> - {{ albumItems.length }} items</span>
             <span class="meta" v-else>
-              - {{ sortedItems.length }} of {{ isSearchMode ? searchTotal : total }}
+              - {{ photosMeta }}
             </span>
           </div>
         </div>

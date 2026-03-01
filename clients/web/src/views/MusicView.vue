@@ -78,6 +78,7 @@ const searchCursor = ref(null);
 const loading = ref(false);
 const error = ref('');
 const requestVersion = ref(0);
+let searchAbortController = null;
 const selectedTrack = ref(null);
 const selectedAlbum = ref(null);
 const selectedArtist = ref(null);
@@ -178,9 +179,21 @@ const albumTrackCount = computed(() => {
   }
   const fromAlbum = Number(selectedAlbum.value.tracks);
   if (Number.isFinite(fromAlbum) && fromAlbum > 0) {
-    return fromAlbum;
+    return Math.max(fromAlbum, albumTracks.value.length);
   }
   return albumTracks.value.length;
+});
+const selectedAlbumTitle = computed(() => {
+  if (selectedAlbum.value?.album) {
+    return selectedAlbum.value.album;
+  }
+  return albumTracks.value[0]?.album || 'Unknown Album';
+});
+const selectedAlbumArtist = computed(() => {
+  if (selectedAlbum.value?.artist) {
+    return selectedAlbum.value.artist;
+  }
+  return albumTracks.value[0]?.artist || 'Unknown Artist';
 });
 
 const hasMore = computed(() => {
@@ -208,6 +221,13 @@ const hasMore = computed(() => {
     return false;
   }
   return artists.value.length < artistsTotal.value;
+});
+const songsMeta = computed(() => {
+  const totalValue = isSearchMode.value ? searchTotal.value : total.value;
+  if (Number.isFinite(totalValue) && totalValue >= 0) {
+    return `${displaySongs.value.length} of ${totalValue}`;
+  }
+  return `${displaySongs.value.length}`;
 });
 
 function trackTitle(item) {
@@ -359,10 +379,21 @@ async function runSearch({ reset = true } = {}) {
     return;
   }
   const query = searchQuery.value.trim();
+  if (searchAbortController) {
+    searchAbortController.abort();
+    searchAbortController = null;
+  }
   if (!query) {
     resetPagedState({ items: searchResults, total: searchTotal, offset: searchOffset, cursor: searchCursor });
     return;
   }
+  const signal =
+    typeof AbortController === 'undefined'
+      ? null
+      : (() => {
+          searchAbortController = new AbortController();
+          return searchAbortController.signal;
+        })();
   await loadPaged({
     reset,
     items: searchResults,
@@ -382,6 +413,7 @@ async function runSearch({ reset = true } = {}) {
         cursor: pageCursor,
         pathPrefix: activePinPath.value || undefined,
         includeTotal: false,
+        signal,
       }),
   });
 }
@@ -1023,7 +1055,7 @@ onMounted(() => {
               }}
             </strong>
             <span class="meta" v-if="mode === 'songs'">
-              - {{ displaySongs.length }} of {{ isSearchMode ? searchTotal : total }}
+              - {{ songsMeta }}
             </span>
             <span class="meta" v-else-if="mode === 'albums' && !selectedAlbum">
               - {{ filteredAlbums.length }} of {{ albumsTotal }}
@@ -1118,8 +1150,8 @@ onMounted(() => {
             <div v-else class="tile-fallback"><i class="fa-solid fa-compact-disc"></i></div>
           </div>
           <div class="album-detail-info">
-            <div class="album-detail-title">{{ selectedAlbum.album || 'Unknown Album' }}</div>
-            <div class="meta">{{ selectedAlbum.artist || 'Unknown Artist' }}</div>
+            <div class="album-detail-title">{{ selectedAlbumTitle }}</div>
+            <div class="meta">{{ selectedAlbumArtist }}</div>
             <div v-if="selectedAlbum.releaseDate" class="meta">
               Released {{ selectedAlbum.releaseDate }}
             </div>

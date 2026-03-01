@@ -89,7 +89,9 @@ function registerFileRoutes(fastify, ctx) {
       return sendError(reply, 404, 'not_found', 'Not found');
     }
 
-    const mimeType = entry.mime || mime.lookup(fullPath) || 'application/octet-stream';
+    const storedMime =
+      entry.mime && entry.mime !== 'application/octet-stream' ? entry.mime : null;
+    const mimeType = storedMime || mime.lookup(fullPath) || 'application/octet-stream';
     const isImage = mimeType.startsWith('image/');
     const isVideo = mimeType.startsWith('video/');
     if (!isImage && !isVideo) {

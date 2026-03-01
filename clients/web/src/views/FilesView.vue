@@ -98,6 +98,7 @@ const trashTotal = ref(0);
 const trashOffset = ref(0);
 const needsFilesRefresh = ref(false);
 const requestVersion = ref(0);
+let searchAbortController = null;
 const {
   menu: breadcrumbMenu,
   openMenu: openBreadcrumbMenuBase,
@@ -597,10 +598,21 @@ async function runSearch({ reset = true } = {}) {
     return;
   }
   const query = searchQuery.value.trim();
+  if (searchAbortController) {
+    searchAbortController.abort();
+    searchAbortController = null;
+  }
   if (!query) {
     resetPagedState({ items: searchResults, total: searchTotal, offset: searchOffset, cursor: searchCursor });
     return;
   }
+  const signal =
+    typeof AbortController === 'undefined'
+      ? null
+      : (() => {
+          searchAbortController = new AbortController();
+          return searchAbortController.signal;
+        })();
   await loadPaged({
     reset,
     items: searchResults,
@@ -618,6 +630,7 @@ async function runSearch({ reset = true } = {}) {
         offset: pageOffset,
         cursor: pageCursor,
         includeTotal: false,
+        signal,
       }),
   });
 }
