@@ -5,6 +5,10 @@ const { spawn, spawnSync } = require('child_process');
 
 let sharpModule = null;
 let ffmpegAvailable = null;
+const PREVIEW_CACHE_VERSION = 'v3';
+const DEFAULT_PREVIEW_MAX_SIZE = 140;
+const DEFAULT_PREVIEW_JPEG_QUALITY = 70;
+const DEFAULT_VIDEO_PREVIEW_QSCALE = 7;
 
 function loadSharp() {
   if (sharpModule !== null) {
@@ -45,15 +49,26 @@ function runFfmpeg(args) {
   });
 }
 
-function previewCachePath(previewDir, rootId, relPath, mtime) {
-  const hash = crypto
+function previewCacheKey(rootId, relPath, mtime) {
+  return crypto
     .createHash('sha1')
-    .update(`${rootId}:${relPath}:${mtime}`)
+    .update(
+      `${PREVIEW_CACHE_VERSION}:${rootId}:${relPath}:${mtime}:${DEFAULT_PREVIEW_MAX_SIZE}:${DEFAULT_PREVIEW_JPEG_QUALITY}:${DEFAULT_VIDEO_PREVIEW_QSCALE}`
+    )
     .digest('hex');
+}
+
+function previewCachePath(previewDir, rootId, relPath, mtime) {
+  const hash = previewCacheKey(rootId, relPath, mtime);
   return path.join(previewDir, `${hash}.jpg`);
 }
 
-async function ensureVideoPreview({ fullPath, previewPath, maxSize = 480, seekSeconds = 1 }) {
+async function ensureVideoPreview({
+  fullPath,
+  previewPath,
+  maxSize = DEFAULT_PREVIEW_MAX_SIZE,
+  seekSeconds = 1,
+}) {
   if (fs.existsSync(previewPath)) {
     return previewPath;
   }
@@ -73,7 +88,7 @@ async function ensureVideoPreview({ fullPath, previewPath, maxSize = 480, seekSe
     '-vf',
     `scale=${maxSize}:-2:force_original_aspect_ratio=decrease`,
     '-q:v',
-    '4',
+    String(DEFAULT_VIDEO_PREVIEW_QSCALE),
     previewPath,
   ];
   try {
@@ -93,7 +108,12 @@ async function ensureVideoPreview({ fullPath, previewPath, maxSize = 480, seekSe
   return null;
 }
 
-async function ensurePreview({ fullPath, previewPath, maxSize = 480, mimeType = '' }) {
+async function ensurePreview({
+  fullPath,
+  previewPath,
+  maxSize = DEFAULT_PREVIEW_MAX_SIZE,
+  mimeType = '',
+}) {
   if (fs.existsSync(previewPath)) {
     return previewPath;
   }
@@ -107,16 +127,28 @@ async function ensurePreview({ fullPath, previewPath, maxSize = 480, mimeType = 
     return null;
   }
 
-  await sharp(fullPath)
-    .resize(maxSize, maxSize, { fit: 'inside' })
-    .jpeg({ quality: 80 })
-    .toFile(previewPath);
+  try {
+    await sharp(fullPath)
+      .resize(maxSize, maxSize, { fit: 'inside' })
+      .jpeg({ quality: DEFAULT_PREVIEW_JPEG_QUALITY })
+      .toFile(previewPath);
+  } catch {
+    try {
+      if (fs.existsSync(previewPath)) {
+        await fs.promises.unlink(previewPath);
+      }
+    } catch {
+      // ignore cleanup failures
+    }
+    return null;
+  }
 
   return previewPath;
 }
 
 module.exports = {
   loadSharp,
+  previewCacheKey,
   previewCachePath,
   ensurePreview,
 };

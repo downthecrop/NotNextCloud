@@ -86,8 +86,18 @@ const progress = computed(() => props.status?.progress || null);
 const progressPercent = computed(() =>
   Number.isFinite(progress.value?.percent) ? progress.value.percent : null
 );
+const thumbnailStats = computed(() => props.status?.thumbnailStats || null);
+const thumbnailCoverage = computed(() => {
+  const created = thumbnailStats.value?.created;
+  const total = thumbnailStats.value?.total;
+  if (!Number.isFinite(created) || !Number.isFinite(total) || total <= 0) {
+    return null;
+  }
+  return Math.max(0, Math.min(100, Math.round((created / total) * 100)));
+});
 const countFormatter = new Intl.NumberFormat('en-US');
 const formatCount = (value) => (Number.isFinite(value) ? countFormatter.format(value) : '0');
+const formatCountMaybe = (value) => (Number.isFinite(value) ? formatCount(value) : '...');
 
 const hasEmptyPath = computed(() =>
   draftRoots.value.some((root) => !(root.path || '').trim())
@@ -239,6 +249,17 @@ watch(
                   {{ formatCount(entry.processedEntries) }} items in
                   {{ Math.max(0, Math.round((entry.durationMs || 0) / 1000)) }}s
                   <span v-if="entry.errorCount">({{ formatCount(entry.errorCount) }} errors)</span>
+                </div>
+                <div>Thumbnails created: {{ formatCountMaybe(thumbnailStats?.created) }}</div>
+                <div>Thumbnails queued: {{ formatCountMaybe(thumbnailStats?.queued) }}</div>
+                <div>Thumbnails total: {{ formatCountMaybe(thumbnailStats?.total) }}</div>
+                <div v-if="thumbnailCoverage !== null">Thumbnail coverage: {{ thumbnailCoverage }}%</div>
+                <div v-if="Number.isFinite(thumbnailStats?.workersTotal)">
+                  Thumbnail workers:
+                  {{ formatCountMaybe(thumbnailStats?.workersBusy) }} / {{ formatCountMaybe(thumbnailStats?.workersTotal) }}
+                </div>
+                <div v-if="thumbnailStats?.lastUpdatedAt">
+                  Thumbnail stats updated: {{ formatDate(thumbnailStats.lastUpdatedAt) }}
                 </div>
               </div>
               <div v-if="status.scanInProgress && progress" class="settings-progress">

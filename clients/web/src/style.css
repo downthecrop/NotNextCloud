@@ -1449,6 +1449,41 @@ input::placeholder {
   background: rgba(90, 211, 255, 0.2);
 }
 
+.artist-detail {
+  display: grid;
+  gap: 14px;
+}
+
+.artist-detail-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--panel-strong);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+}
+
+.artist-detail-albums {
+  display: grid;
+  gap: 8px;
+}
+
+.artist-album-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.artist-album-card {
+  background: var(--panel-strong);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  display: grid;
+  gap: 4px;
+}
+
 .meta {
   font-size: 13px;
   color: var(--muted);

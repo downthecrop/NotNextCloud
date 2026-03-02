@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch, onMounted } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import { useApi } from '../composables/useApi';
 import { useDownloads } from '../composables/useDownloads';
 import { useImageErrors } from '../composables/useImageErrors';
@@ -54,6 +54,9 @@ const { sortDir, setSort, sortList, compareText } = useSort({
   initialKey: 'date',
   initialDir: 'desc',
 });
+const PHOTO_RENDER_QUEUE_MAX = 360;
+const PHOTO_RENDER_QUEUE_CHUNK = 60;
+const PHOTO_WHEEL_EDGE_THRESHOLD = 220;
 
 const items = ref([]);
 const total = ref(0);
@@ -82,6 +85,17 @@ const selectedAlbumId = ref(null);
 const jumpTarget = ref(null);
 const requestVersion = ref(0);
 let searchAbortController = null;
+let inFlightMediaRequest = null;
+let inFlightSearchRequest = null;
+const topSentinel = ref(null);
+const photoHeadBuffer = ref([]);
+const photoTailBuffer = ref([]);
+const searchHeadBuffer = ref([]);
+const searchTailBuffer = ref([]);
+let topObserver = null;
+let topIntersecting = false;
+let wheelRafId = 0;
+let pendingWheelDelta = 0;
 const startDate = ref('');
 const endDate = ref('');
 const {
@@ -103,6 +117,11 @@ const {
 } = usePinnedLocations({ storageKey: 'localCloudPhotoPins' });
 
 const rootId = computed(() => props.currentRoot?.id || '');
+const timelineDateFormatter = new Intl.DateTimeFormat('en-US', {
+  month: 'long',
+  day: 'numeric',
+  year: 'numeric',
+});
 function itemKey(item) {
   return buildItemKey(item);
 }
@@ -118,19 +137,31 @@ const selectedAlbum = computed(
 const isAlbumDetail = computed(() => Boolean(selectedAlbum.value));
 const albumItems = computed(() => selectedAlbum.value?.items || []);
 const sortLabel = computed(() => (sortDir.value === 'desc' ? 'Newest' : 'Oldest'));
+const visiblePhotoCount = computed(
+  () => items.value.length + photoHeadBuffer.value.length + photoTailBuffer.value.length
+);
+const visibleSearchCount = computed(
+  () => searchResults.value.length + searchHeadBuffer.value.length + searchTailBuffer.value.length
+);
 const hasMore = computed(() => {
   if (isAlbumDetail.value) {
     return false;
   }
   if (isSearchMode.value) {
+    if (searchTailBuffer.value.length > 0) {
+      return true;
+    }
     return hasMoreFromTotalOrCursor({
-      itemsLength: searchResults.value.length,
+      itemsLength: visibleSearchCount.value,
       total: searchTotal.value,
       cursor: searchCursor.value,
     });
   }
+  if (photoTailBuffer.value.length > 0) {
+    return true;
+  }
   return hasMoreFromTotalOrCursor({
-    itemsLength: items.value.length,
+    itemsLength: visiblePhotoCount.value,
     total: total.value,
     cursor: cursor.value,
   });
@@ -204,24 +235,26 @@ function sortPhotos(list) {
 }
 
 const modalItems = computed(() => (isAlbumDetail.value ? sortedAlbumItems.value : sortedItems.value));
+const canRestoreFromTop = computed(() => {
+  if (isAlbumDetail.value) {
+    return false;
+  }
+  return isSearchMode.value ? searchHeadBuffer.value.length > 0 : photoHeadBuffer.value.length > 0;
+});
 const photosMeta = computed(() => {
   const totalValue = isSearchMode.value ? searchTotal.value : total.value;
+  const loadedCount = isSearchMode.value ? visibleSearchCount.value : visiblePhotoCount.value;
   if (Number.isFinite(totalValue) && totalValue >= 0) {
-    return `${sortedItems.value.length} of ${totalValue}`;
+    return `${loadedCount} of ${totalValue}`;
   }
-  return `${sortedItems.value.length}`;
+  return `${loadedCount}`;
 });
 
 const timelineGroups = computed(() => {
   const groups = [];
-  const formatter = new Intl.DateTimeFormat('en-US', {
-    month: 'long',
-    day: 'numeric',
-    year: 'numeric',
-  });
   let currentLabel = '';
   for (const item of sortedItems.value) {
-    const label = formatter.format(new Date(item.mtime));
+    const label = timelineDateFormatter.format(new Date(item.mtime));
     if (!groups.length || label !== currentLabel) {
       groups.push({ label, items: [] });
       currentLabel = label;
@@ -445,11 +478,218 @@ function getSelectedItems() {
   return selectedItemKeys.value.map((key) => byKey.get(key)).filter(Boolean);
 }
 
+function clearRenderBuffers({ search = false } = {}) {
+  if (search) {
+    searchHeadBuffer.value = [];
+    searchTailBuffer.value = [];
+    return;
+  }
+  photoHeadBuffer.value = [];
+  photoTailBuffer.value = [];
+}
+
+function appendToHeadBuffer(bufferRef, removed) {
+  if (!Array.isArray(removed) || !removed.length) {
+    return;
+  }
+  bufferRef.value = [...bufferRef.value, ...removed];
+}
+
+function prependToTailBuffer(bufferRef, removed) {
+  if (!Array.isArray(removed) || !removed.length) {
+    return;
+  }
+  bufferRef.value = [...removed, ...bufferRef.value];
+}
+
+function trimWindowFromTop(listRef, headBufferRef) {
+  if (!Array.isArray(listRef.value)) {
+    return false;
+  }
+  const overflow = listRef.value.length - PHOTO_RENDER_QUEUE_MAX;
+  if (overflow <= 0) {
+    return false;
+  }
+  const removedTop = listRef.value.slice(0, overflow);
+  listRef.value = listRef.value.slice(overflow);
+  appendToHeadBuffer(headBufferRef, removedTop);
+  return true;
+}
+
+function restoreFromHeadBuffer({ listRef, headBufferRef, tailBufferRef }) {
+  const available = headBufferRef.value.length;
+  if (!available) {
+    return false;
+  }
+  const count = Math.min(PHOTO_RENDER_QUEUE_CHUNK, available);
+  const start = available - count;
+  const restored = headBufferRef.value.slice(start);
+  headBufferRef.value = headBufferRef.value.slice(0, start);
+  listRef.value = [...restored, ...listRef.value];
+  const overflow = listRef.value.length - PHOTO_RENDER_QUEUE_MAX;
+  if (overflow > 0) {
+    const removedTail = listRef.value.slice(listRef.value.length - overflow);
+    listRef.value = listRef.value.slice(0, listRef.value.length - overflow);
+    prependToTailBuffer(tailBufferRef, removedTail);
+  }
+  return true;
+}
+
+function restoreFromTailBuffer({ listRef, headBufferRef, tailBufferRef }) {
+  const available = tailBufferRef.value.length;
+  if (!available) {
+    return false;
+  }
+  const count = Math.min(PHOTO_RENDER_QUEUE_CHUNK, available);
+  const restored = tailBufferRef.value.slice(0, count);
+  tailBufferRef.value = tailBufferRef.value.slice(count);
+  listRef.value = [...listRef.value, ...restored];
+  const overflow = listRef.value.length - PHOTO_RENDER_QUEUE_MAX;
+  if (overflow > 0) {
+    const removedTop = listRef.value.slice(0, overflow);
+    listRef.value = listRef.value.slice(overflow);
+    appendToHeadBuffer(headBufferRef, removedTop);
+  }
+  return true;
+}
+
+function restoreFromTopWindow() {
+  if (loading.value || isAlbumDetail.value) {
+    return false;
+  }
+  const restored = isSearchMode.value
+    ? restoreFromHeadBuffer({
+        listRef: searchResults,
+        headBufferRef: searchHeadBuffer,
+        tailBufferRef: searchTailBuffer,
+      })
+    : restoreFromHeadBuffer({
+        listRef: items,
+        headBufferRef: photoHeadBuffer,
+        tailBufferRef: photoTailBuffer,
+      });
+  if (restored && selectionCount.value) {
+    clearSelection();
+  }
+  return restored;
+}
+
+function restoreFromBottomWindow() {
+  const restored = isSearchMode.value
+    ? restoreFromTailBuffer({
+        listRef: searchResults,
+        headBufferRef: searchHeadBuffer,
+        tailBufferRef: searchTailBuffer,
+      })
+    : restoreFromTailBuffer({
+        listRef: items,
+        headBufferRef: photoHeadBuffer,
+        tailBufferRef: photoTailBuffer,
+      });
+  if (restored && selectionCount.value) {
+    clearSelection();
+  }
+  return restored;
+}
+
+function setupTopObserver() {
+  if (topObserver) {
+    topObserver.disconnect();
+    topObserver = null;
+  }
+  topObserver = new IntersectionObserver(
+    (entries) => {
+      const entry = entries.find((item) => item.target === topSentinel.value);
+      if (!entry) {
+        return;
+      }
+      if (entry.isIntersecting && !topIntersecting) {
+        topIntersecting = true;
+        restoreFromTopWindow();
+      } else if (!entry.isIntersecting) {
+        topIntersecting = false;
+      }
+    },
+    { rootMargin: '240px 0px 240px 0px' }
+  );
+  if (topSentinel.value) {
+    topObserver.observe(topSentinel.value);
+  }
+}
+
+function windowScrollTop() {
+  if (typeof window === 'undefined') {
+    return 0;
+  }
+  return window.scrollY || window.pageYOffset || document.documentElement?.scrollTop || 0;
+}
+
+function windowScrollHeight() {
+  if (typeof document === 'undefined') {
+    return 0;
+  }
+  return Math.max(
+    document.documentElement?.scrollHeight || 0,
+    document.body?.scrollHeight || 0
+  );
+}
+
+function isNearWindowTop() {
+  return windowScrollTop() <= PHOTO_WHEEL_EDGE_THRESHOLD;
+}
+
+function isNearWindowBottom() {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+  const viewportBottom = windowScrollTop() + (window.innerHeight || 0);
+  return windowScrollHeight() - viewportBottom <= PHOTO_WHEEL_EDGE_THRESHOLD;
+}
+
+function handleWindowWheel(event) {
+  if (isAlbumDetail.value || modalOpen.value) {
+    return;
+  }
+  const deltaY = Number(event?.deltaY) || 0;
+  if (!deltaY) {
+    return;
+  }
+  pendingWheelDelta = deltaY;
+  if (wheelRafId) {
+    return;
+  }
+  wheelRafId = window.requestAnimationFrame(() => {
+    wheelRafId = 0;
+    const nextDelta = pendingWheelDelta;
+    pendingWheelDelta = 0;
+    if (nextDelta < 0) {
+      if (isNearWindowTop()) {
+        restoreFromTopWindow();
+      }
+      return;
+    }
+    if (nextDelta > 0 && isNearWindowBottom()) {
+      loadMore();
+    }
+  });
+}
+
 async function loadPhotos({ reset = true } = {}) {
   if (!props.currentRoot) {
     return;
   }
-  await loadPaged({
+  const requestKey = [
+    props.currentRoot.id,
+    props.pageSize,
+    activePinPath.value || '',
+    reset ? 'reset' : 'append',
+    reset ? 0 : offset.value || 0,
+    reset ? '' : cursor.value || '',
+  ].join('|');
+  if (inFlightMediaRequest?.key === requestKey) {
+    return inFlightMediaRequest.promise;
+  }
+  const requestPromise = loadPaged({
     reset,
     items,
     total,
@@ -458,7 +698,10 @@ async function loadPhotos({ reset = true } = {}) {
     loading,
     error,
     errorMessage: 'Failed to load photos',
-    onReset: clearSelection,
+    onReset: () => {
+      clearSelection();
+      clearRenderBuffers({ search: false });
+    },
     requestVersion,
     fetchPage: ({ offset: pageOffset, cursor: pageCursor }) =>
       listMedia({
@@ -471,6 +714,20 @@ async function loadPhotos({ reset = true } = {}) {
         includeTotal: false,
       }),
   });
+  inFlightMediaRequest = { key: requestKey, promise: requestPromise };
+  try {
+    const result = await requestPromise;
+    if (result?.ok && trimWindowFromTop(items, photoHeadBuffer)) {
+      if (selectionCount.value) {
+        clearSelection();
+      }
+    }
+    return result;
+  } finally {
+    if (inFlightMediaRequest?.promise === requestPromise) {
+      inFlightMediaRequest = null;
+    }
+  }
 }
 
 async function runSearch({ reset = true } = {}) {
@@ -484,6 +741,7 @@ async function runSearch({ reset = true } = {}) {
   }
   if (!query) {
     resetPagedState({ items: searchResults, total: searchTotal, offset: searchOffset, cursor: searchCursor });
+    clearRenderBuffers({ search: true });
     return;
   }
   const signal =
@@ -493,13 +751,29 @@ async function runSearch({ reset = true } = {}) {
           searchAbortController = new AbortController();
           return searchAbortController.signal;
         })();
-  await loadPaged({
+  const requestKey = [
+    props.currentRoot.id,
+    props.pageSize,
+    activePinPath.value || '',
+    query,
+    reset ? 'reset' : 'append',
+    reset ? 0 : searchOffset.value || 0,
+    reset ? '' : searchCursor.value || '',
+  ].join('|');
+  if (inFlightSearchRequest?.key === requestKey) {
+    return inFlightSearchRequest.promise;
+  }
+  const requestPromise = loadPaged({
     reset,
     items: searchResults,
     total: searchTotal,
     offset: searchOffset,
     cursor: searchCursor,
     loading,
+    onReset: () => {
+      clearSelection();
+      clearRenderBuffers({ search: true });
+    },
     requestVersion,
     fetchPage: ({ offset: pageOffset, cursor: pageCursor }) =>
       searchEntries({
@@ -514,10 +788,27 @@ async function runSearch({ reset = true } = {}) {
         signal,
       }),
   });
+  inFlightSearchRequest = { key: requestKey, promise: requestPromise };
+  try {
+    const result = await requestPromise;
+    if (result?.ok && trimWindowFromTop(searchResults, searchHeadBuffer)) {
+      if (selectionCount.value) {
+        clearSelection();
+      }
+    }
+    return result;
+  } finally {
+    if (inFlightSearchRequest?.promise === requestPromise) {
+      inFlightSearchRequest = null;
+    }
+  }
 }
 
 async function loadMore() {
   if (loading.value || !hasMore.value) {
+    return;
+  }
+  if (restoreFromBottomWindow()) {
     return;
   }
   if (isSearchMode.value) {
@@ -527,7 +818,9 @@ async function loadMore() {
   }
 }
 
-const { sentinel } = useInfiniteScroll(loadMore);
+const { sentinel } = useInfiniteScroll(loadMore, {
+  canLoadMore: () => !loading.value && hasMore.value,
+});
 
 useDebouncedWatch(searchQuery, () => runSearch({ reset: true }));
 
@@ -563,7 +856,15 @@ watch(
 
 watch(
   () => props.roots,
-  () => {
+  (nextRoots, prevRoots) => {
+    if (!Array.isArray(prevRoots) || prevRoots.length === 0) {
+      return;
+    }
+    const nextIds = nextRoots.map((root) => root?.id || '').join('|');
+    const prevIds = prevRoots.map((root) => root?.id || '').join('|');
+    if (nextIds === prevIds) {
+      return;
+    }
     if (props.currentRoot?.id === ALL_ROOTS_ID) {
       loadPhotos({ reset: true });
     }
@@ -585,8 +886,39 @@ watch([searchQuery, startDate, endDate, selectedAlbumId], () => {
 });
 
 onMounted(() => {
+  setupTopObserver();
+  if (typeof window !== 'undefined') {
+    window.addEventListener('wheel', handleWindowWheel, { passive: true });
+  }
   loadAlbums();
   loadPins();
+});
+
+onUnmounted(() => {
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('wheel', handleWindowWheel);
+    if (wheelRafId) {
+      window.cancelAnimationFrame(wheelRafId);
+      wheelRafId = 0;
+    }
+  }
+  if (topObserver) {
+    topObserver.disconnect();
+    topObserver = null;
+  }
+});
+
+watch(topSentinel, (value, oldValue) => {
+  if (!topObserver) {
+    return;
+  }
+  topIntersecting = false;
+  if (oldValue) {
+    topObserver.unobserve(oldValue);
+  }
+  if (value) {
+    topObserver.observe(value);
+  }
 });
 
 watch(
@@ -697,6 +1029,7 @@ watch(
       </div>
 
       <div v-else-if="!selectedAlbum" class="timeline">
+        <div v-if="canRestoreFromTop" ref="topSentinel" class="scroll-sentinel"></div>
         <div v-for="group in timelineGroups" :key="group.label" class="timeline-group">
           <div class="timeline-label">{{ group.label }}</div>
           <div class="timeline-grid">
@@ -709,7 +1042,7 @@ watch(
             >
               <img
                 v-if="(isImage(item) || isVideo(item)) && !hasImageError(item, 'tile')"
-                :src="previewUrl(itemRootId(item), item.path)"
+                :src="previewUrl(itemRootId(item), item.path, { previewKey: item.previewKey, mtime: item.mtime, mime: item.mime })"
                 :alt="item.name"
                 loading="lazy"
                 @error="markImageError(item, 'tile')"
@@ -767,7 +1100,7 @@ watch(
           >
             <img
               v-if="(isImage(item) || isVideo(item)) && !hasImageError(item, 'album')"
-              :src="previewUrl(itemRootId(item), item.path)"
+              :src="previewUrl(itemRootId(item), item.path, { previewKey: item.previewKey, mtime: item.mtime, mime: item.mime })"
               :alt="item.name"
               loading="lazy"
               @error="markImageError(item, 'album')"

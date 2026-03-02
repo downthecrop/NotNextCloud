@@ -1,7 +1,8 @@
-import { ref } from 'vue';
+import { ref, computed } from 'vue';
 
 export function useMultiSelect({ getItems, getKey }) {
   const selectedKeys = ref([]);
+  const selectedKeySet = computed(() => new Set(selectedKeys.value));
   const anchorKey = ref(null);
 
   function normalizeKey(item) {
@@ -27,7 +28,7 @@ export function useMultiSelect({ getItems, getKey }) {
     if (!key) {
       return;
     }
-    if (selectedKeys.value.includes(key)) {
+    if (selectedKeySet.value.has(key)) {
       selectedKeys.value = selectedKeys.value.filter((value) => value !== key);
     } else {
       selectedKeys.value = [...selectedKeys.value, key];
@@ -67,11 +68,12 @@ export function useMultiSelect({ getItems, getKey }) {
 
   function isSelected(item) {
     const key = normalizeKey(item);
-    return selectedKeys.value.includes(key);
+    return selectedKeySet.value.has(key);
   }
 
   return {
     selectedKeys,
+    selectedKeySet,
     anchorKey,
     clearSelection,
     setSingleSelection,

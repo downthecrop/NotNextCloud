@@ -510,6 +510,13 @@ function handleRootSelect(root) {
   closeSidebar();
 }
 
+function rowAnimationStyle(index) {
+  if (!Number.isFinite(index) || index < 0 || index > 24) {
+    return null;
+  }
+  return { animationDelay: `${index * 20}ms` };
+}
+
 async function openTrash() {
   isTrashView.value = true;
   viewMode.value = 'list';
@@ -763,7 +770,9 @@ async function loadMore() {
   }
 }
 
-const { sentinel } = useInfiniteScroll(loadMore);
+const { sentinel } = useInfiniteScroll(loadMore, {
+  canLoadMore: () => !loading.value && hasMore.value,
+});
 
 useDebouncedWatch(searchQuery, () => {
   if (isTrashView.value) {
@@ -1078,7 +1087,7 @@ watch(
           :class="{ selected: isSelected(item) }"
           @click="handleItemClick(item, $event)"
           @contextmenu.prevent="openItemMenu($event, item)"
-          :style="{ animationDelay: `${index * 20}ms` }"
+          :style="rowAnimationStyle(index)"
           >
             <div class="name-cell">
               <img
@@ -1090,7 +1099,7 @@ watch(
               <img
                 v-else-if="(isImage(item) || isVideo(item)) && !hasImageError(item, 'list')"
                 class="list-thumb"
-                :src="previewUrl(itemRootId(item), item.path)"
+                :src="previewUrl(itemRootId(item), item.path, { previewKey: item.previewKey, mtime: item.mtime, mime: item.mime })"
                 :alt="item.name"
                 @error="markImageError(item, 'list')"
               />
@@ -1126,7 +1135,7 @@ watch(
               <span v-else-if="isTrashView" class="icon"><i :class="iconClass(item)"></i></span>
               <img
                 v-else-if="(isImage(item) || isVideo(item)) && !hasImageError(item, 'thumb')"
-                :src="previewUrl(itemRootId(item), item.path)"
+                :src="previewUrl(itemRootId(item), item.path, { previewKey: item.previewKey, mtime: item.mtime, mime: item.mime })"
                 :alt="item.name"
                 @error="markImageError(item, 'thumb')"
               />
@@ -1177,7 +1186,7 @@ watch(
         </div>
         <img
           v-else-if="isImage(activeItem) && !hasImageError(activeItem, 'panel')"
-          :src="previewUrl(itemRootId(activeItem), activeItem.path)"
+          :src="previewUrl(itemRootId(activeItem), activeItem.path, { previewKey: activeItem.previewKey, mtime: activeItem.mtime, mime: activeItem.mime })"
           :alt="activeItem.name"
           @error="markImageError(activeItem, 'panel')"
         />
@@ -1325,22 +1334,6 @@ watch(
       Restore
     </button>
     <button
-      v-if="isTrashView"
-      class="context-menu-item danger"
-      @click="deleteTrashSelection"
-    >
-      <i class="fa-solid fa-trash-can"></i>
-      Delete permanently
-    </button>
-    <button
-      v-if="!isTrashView"
-      class="context-menu-item danger"
-      @click="deleteSelection"
-    >
-      <i class="fa-solid fa-trash"></i>
-      Delete
-    </button>
-    <button
       v-if="!isTrashView && itemMenu.item && isAudio(itemMenu.item)"
       class="context-menu-item"
       @click="handleOpenInMusic(itemMenu.item)"
@@ -1363,6 +1356,22 @@ watch(
     >
       <i class="fa-solid fa-file-zipper"></i>
       Download selection ({{ selectionCount }})
+    </button>
+    <button
+      v-if="isTrashView"
+      class="context-menu-item danger"
+      @click="deleteTrashSelection"
+    >
+      <i class="fa-solid fa-trash-can"></i>
+      Delete permanently
+    </button>
+    <button
+      v-if="!isTrashView"
+      class="context-menu-item danger"
+      @click="deleteSelection"
+    >
+      <i class="fa-solid fa-trash"></i>
+      Delete
     </button>
   </div>
 </template>

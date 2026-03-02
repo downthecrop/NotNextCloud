@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch, onMounted } from 'vue';
+import { ref, computed, watch, onMounted, nextTick } from 'vue';
 import { useApi } from '../composables/useApi';
 import { useDownloads } from '../composables/useDownloads';
 import { useInfiniteScroll } from '../composables/useInfiniteScroll';
@@ -107,6 +107,10 @@ const {
 } = useMenu({ album: null });
 const albumTracks = ref([]);
 const artistTracks = ref([]);
+const musicBrowserRef = ref(null);
+const artistListScroll = ref({ windowY: 0, containerY: 0 });
+const artistAlbumCoverErrors = ref(new Set());
+const albumOpenedFromArtist = ref(false);
 const { sidebarOpen, toggleSidebar, closeSidebar } = useSidebar();
 useGlobalMenuClose([closeContextMenu, closeAlbumMenu]);
 const {
@@ -122,7 +126,12 @@ const {
 
 const rootId = computed(() => props.currentRoot?.id || '');
 const isSearchMode = computed(() => Boolean(searchQuery.value.trim()));
-const normalizedSearchQuery = computed(() => searchQuery.value.trim().toLowerCase());
+const albumSearchQuery = computed(() =>
+  mode.value === 'albums' && !selectedAlbum.value ? searchQuery.value.trim() : ''
+);
+const artistSearchQuery = computed(() =>
+  mode.value === 'artists' && !selectedArtist.value ? searchQuery.value.trim() : ''
+);
 const displaySongs = computed(() => (isSearchMode.value ? searchResults.value : items.value));
 const queue = computed(() => {
   if (mode.value === 'songs') {
@@ -136,25 +145,8 @@ const queue = computed(() => {
   }
   return sortedArtistTracks.value;
 });
-const filteredAlbums = computed(() => {
-  if (!isSearchMode.value) {
-    return albums.value;
-  }
-  return albums.value.filter((album) => {
-    return (
-      album.album?.toLowerCase().includes(normalizedSearchQuery.value) ||
-      album.artist?.toLowerCase().includes(normalizedSearchQuery.value)
-    );
-  });
-});
-const filteredArtists = computed(() => {
-  if (!isSearchMode.value) {
-    return artists.value;
-  }
-  return artists.value.filter((artist) =>
-    artist.artist?.toLowerCase().includes(normalizedSearchQuery.value)
-  );
-});
+const filteredAlbums = computed(() => albums.value);
+const filteredArtists = computed(() => artists.value);
 const {
   selectedKeys: selectedTrackKeys,
   clearSelection: clearTrackSelectionKeys,
@@ -168,6 +160,7 @@ const {
 });
 const selectionCount = computed(() => selectedTrackKeys.value.length);
 const isAlbumDetail = computed(() => mode.value === 'albums' && selectedAlbum.value);
+const isArtistDetail = computed(() => mode.value === 'artists' && selectedArtist.value);
 const selectedPlaylist = computed(
   () => playlists.value.find((playlist) => playlist.id === selectedPlaylistId.value) || null
 );
@@ -195,6 +188,36 @@ const selectedAlbumArtist = computed(() => {
   }
   return albumTracks.value[0]?.artist || 'Unknown Artist';
 });
+const selectedArtistAlbums = computed(() => {
+  if (!isArtistDetail.value) {
+    return [];
+  }
+  const byAlbum = new Map();
+  for (const track of artistTracks.value) {
+    const albumName = trackAlbum(track);
+    const key = track?.albumKey || albumName.toLowerCase();
+    const existing = byAlbum.get(key);
+    if (existing) {
+      existing.tracks += 1;
+      existing.latest = Math.max(existing.latest, Number(track?.mtime) || 0);
+      continue;
+    }
+    byAlbum.set(key, {
+      key,
+      albumKey: track?.albumKey || key,
+      album: albumName,
+      artist: selectedArtist.value?.artist || trackArtist(track),
+      coverKey: track?.albumKey || null,
+      tracks: 1,
+      latest: Number(track?.mtime) || 0,
+    });
+  }
+  return Array.from(byAlbum.values()).sort(
+    (a, b) => b.latest - a.latest || compareText(a.album, b.album)
+  );
+});
+const selectedArtistAlbumCount = computed(() => selectedArtistAlbums.value.length);
+const selectedArtistTrackCount = computed(() => artistTracks.value.length);
 
 const hasMore = computed(() => {
   if (mode.value === 'songs') {
@@ -218,6 +241,9 @@ const hasMore = computed(() => {
     return albums.value.length < albumsTotal.value;
   }
   if (mode.value === 'playlists') {
+    return false;
+  }
+  if (mode.value === 'artists' && selectedArtist.value) {
     return false;
   }
   return artists.value.length < artistsTotal.value;
@@ -437,6 +463,7 @@ async function loadAlbums({ reset = true } = {}) {
         limit: props.pageSize,
         offset: pageOffset,
         pathPrefix: activePinPath.value || undefined,
+        query: albumSearchQuery.value || undefined,
       }),
   });
 }
@@ -460,6 +487,7 @@ async function loadArtists({ reset = true } = {}) {
         limit: props.pageSize,
         offset: pageOffset,
         pathPrefix: activePinPath.value || undefined,
+        query: artistSearchQuery.value || undefined,
       }),
   });
 }
@@ -521,7 +549,9 @@ async function loadMore() {
   await loadArtists({ reset: false });
 }
 
-const { sentinel } = useInfiniteScroll(loadMore);
+const { sentinel } = useInfiniteScroll(loadMore, {
+  canLoadMore: () => !loading.value && hasMore.value,
+});
 
 function selectTrack(item) {
   if (!item) {
@@ -544,27 +574,67 @@ function handleTrackClick(item, event) {
   setSingleTrackSelection(item);
 }
 
-async function selectAlbum(album) {
+async function selectAlbum(album, { fromArtist = false } = {}) {
   clearTrackSelection();
+  albumOpenedFromArtist.value = Boolean(fromArtist);
   selectedAlbum.value = album;
-  selectedArtist.value = null;
+  if (!fromArtist) {
+    selectedArtist.value = null;
+    artistTracks.value = [];
+  }
   await loadAlbumTracks(album.albumKey);
-  props.onNavigate({ mode: 'albums', albumKey: album.albumKey, artist: null, playlistId: null });
+  props.onNavigate({
+    mode: 'albums',
+    albumKey: album.albumKey,
+    artist: fromArtist ? selectedArtist.value?.artist || null : null,
+    playlistId: null,
+  });
 }
 
 function clearAlbumSelection() {
   clearTrackSelection();
+  const returnToArtist = albumOpenedFromArtist.value && selectedArtist.value?.artist;
+  const artistName = selectedArtist.value?.artist || null;
   selectedAlbum.value = null;
   albumTracks.value = [];
+  albumOpenedFromArtist.value = false;
+  if (returnToArtist) {
+    mode.value = 'artists';
+    props.onNavigate({ mode: 'artists', albumKey: null, artist: artistName, playlistId: null });
+    return;
+  }
   props.onNavigate({ mode: 'albums', albumKey: null, artist: null, playlistId: null });
 }
 
 async function selectArtist(artist) {
+  if (typeof window !== 'undefined') {
+    artistListScroll.value = {
+      windowY: window.scrollY || window.pageYOffset || 0,
+      containerY: musicBrowserRef.value?.scrollTop || 0,
+    };
+  }
   clearTrackSelection();
   selectedArtist.value = artist;
   selectedAlbum.value = null;
   await loadArtistTracks(artist.artist);
   props.onNavigate({ mode: 'artists', artist: artist.artist, albumKey: null, playlistId: null });
+}
+
+async function clearArtistSelection({ restoreScroll = true } = {}) {
+  clearTrackSelection();
+  selectedArtist.value = null;
+  artistTracks.value = [];
+  props.onNavigate({ mode: 'artists', artist: null, albumKey: null, playlistId: null });
+  if (!restoreScroll) {
+    return;
+  }
+  await nextTick();
+  if (musicBrowserRef.value) {
+    musicBrowserRef.value.scrollTop = artistListScroll.value.containerY || 0;
+  }
+  if (typeof window !== 'undefined') {
+    window.scrollTo(0, artistListScroll.value.windowY || 0);
+  }
 }
 
 function selectPlaylist(playlist) {
@@ -585,6 +655,7 @@ function selectMode(value) {
   mode.value = value;
   searchQuery.value = '';
   selectedAlbum.value = null;
+  albumOpenedFromArtist.value = false;
   selectedArtist.value = null;
   if (value !== 'playlists') {
     selectedPlaylistId.value = null;
@@ -663,6 +734,22 @@ function handleSelectMode(nextMode) {
 function handleSelectPlaylist(playlist) {
   selectPlaylist(playlist);
   closeSidebar();
+}
+
+function artistAlbumCoverKey(album) {
+  return album?.key || album?.albumKey || album?.album || '';
+}
+
+function hasArtistAlbumCoverError(album) {
+  return artistAlbumCoverErrors.value.has(artistAlbumCoverKey(album));
+}
+
+function markArtistAlbumCoverError(album) {
+  const key = artistAlbumCoverKey(album);
+  if (!key) {
+    return;
+  }
+  artistAlbumCoverErrors.value = new Set([...artistAlbumCoverErrors.value, key]);
 }
 
 function handlePinClear() {
@@ -866,7 +953,19 @@ function addPinForTrack(track) {
   closeContextMenu();
 }
 
-useDebouncedWatch(searchQuery, () => runSearch({ reset: true }));
+useDebouncedWatch(searchQuery, () => {
+  if (mode.value === 'songs') {
+    runSearch({ reset: true });
+    return;
+  }
+  if (mode.value === 'albums' && !selectedAlbum.value) {
+    loadAlbums({ reset: true });
+    return;
+  }
+  if (mode.value === 'artists' && !selectedArtist.value) {
+    loadArtists({ reset: true });
+  }
+});
 
 watch(activePin, () => {
   clearTrackSelection();
@@ -913,6 +1012,13 @@ watch(
     applyNavState();
   },
   { deep: true }
+);
+
+watch(
+  () => selectedArtist.value?.artist,
+  () => {
+    artistAlbumCoverErrors.value = new Set();
+  }
 );
 
 watch(
@@ -1024,7 +1130,7 @@ onMounted(() => {
     </aside>
     <div class="sidebar-scrim" @click="closeSidebar"></div>
 
-    <main class="browser music-browser">
+    <main ref="musicBrowserRef" class="browser music-browser">
       <div class="toolbar">
         <div class="toolbar-title">
           <div class="toolbar-line">
@@ -1043,6 +1149,10 @@ onMounted(() => {
               <i class="fa-solid fa-arrow-left"></i>
               Back
             </button>
+            <button v-if="isArtistDetail" class="action-btn secondary" @click="clearArtistSelection()">
+              <i class="fa-solid fa-arrow-left"></i>
+              Back
+            </button>
             <strong>
               {{
                 mode === 'songs'
@@ -1050,7 +1160,9 @@ onMounted(() => {
                   : mode === 'albums'
                   ? 'Albums'
                   : mode === 'artists'
-                  ? 'Artists'
+                  ? isArtistDetail
+                    ? selectedArtist?.artist || 'Artist'
+                    : 'Artists'
                   : 'Playlists'
               }}
             </strong>
@@ -1069,6 +1181,9 @@ onMounted(() => {
             <span class="meta" v-else-if="mode === 'playlists'">
               - {{ playlistTracks.length }} tracks
             </span>
+            <span class="meta" v-else-if="isArtistDetail">
+              - {{ selectedArtistAlbumCount }} albums, {{ selectedArtistTrackCount }} tracks
+            </span>
             <span class="meta" v-else>
               - {{ filteredArtists.length }} of {{ artistsTotal }}
             </span>
@@ -1076,7 +1191,11 @@ onMounted(() => {
         </div>
         <div
           class="toolbar-actions"
-          v-if="mode === 'songs' || (mode === 'albums' && !selectedAlbum) || mode === 'artists'"
+          v-if="
+            mode === 'songs' ||
+            (mode === 'albums' && !selectedAlbum) ||
+            (mode === 'artists' && !isArtistDetail)
+          "
         >
           <input
             class="search"
@@ -1261,7 +1380,7 @@ onMounted(() => {
         </div>
       </div>
 
-      <div v-if="mode === 'artists'" class="artist-list">
+      <div v-if="mode === 'artists' && !isArtistDetail" class="artist-list">
         <button
           v-for="artist in filteredArtists"
           :key="artist.artist"
@@ -1275,31 +1394,59 @@ onMounted(() => {
         </button>
       </div>
 
-      <div v-if="mode === 'artists' && selectedArtist" class="album-tracks">
-        <div class="music-header">
-          <button class="music-sort" @click="setSort('title')">Song</button>
-          <button class="music-sort" @click="setSort('album')">Album</button>
-          <button class="music-sort" @click="setSort('artist')">Artist</button>
-          <button class="music-sort" @click="setSort('duration')">Duration</button>
+      <div v-if="isArtistDetail" class="artist-detail">
+        <div class="artist-detail-header">
+          <div class="album-detail-title">{{ selectedArtist?.artist || 'Unknown Artist' }}</div>
+          <div class="meta">{{ selectedArtistAlbumCount }} albums</div>
+          <div class="meta">{{ selectedArtistTrackCount }} tracks</div>
         </div>
-        <button
-          v-for="track in sortedArtistTracks"
-          :key="itemKey(track)"
-          class="music-row"
-          :class="{ selected: isSelectedTrack(track) }"
-          @click="handleTrackClick(track, $event)"
-          @contextmenu.prevent="openContextMenu($event, track)"
-        >
-          <div class="music-title">{{ trackTitle(track) }}</div>
-          <div>{{ trackAlbum(track) }}</div>
-          <div>{{ trackArtist(track) }}</div>
-          <div>{{ formatDuration(track.duration) || '--' }}</div>
-        </button>
+        <div v-if="selectedArtistAlbums.length" class="artist-detail-albums">
+          <div class="sidebar-title">Albums</div>
+          <div class="artist-album-grid">
+            <button
+              v-for="album in selectedArtistAlbums"
+              :key="album.key"
+              class="album-card artist-album-card"
+              @click="selectAlbum(album, { fromArtist: true })"
+              @contextmenu.prevent="openAlbumMenu($event, album)"
+            >
+              <div class="album-art">
+                <img
+                  v-if="album.coverKey && !hasArtistAlbumCoverError(album)"
+                  :src="albumArtUrl(rootId, album.coverKey)"
+                  :alt="album.album"
+                  @error="markArtistAlbumCoverError(album)"
+                />
+                <div v-else class="tile-fallback"><i class="fa-solid fa-compact-disc"></i></div>
+              </div>
+              <div class="music-title">{{ album.album }}</div>
+              <div class="meta">{{ album.tracks }} tracks</div>
+            </button>
+          </div>
+        </div>
+        <div class="album-tracks">
+          <div class="music-header">
+            <button class="music-sort" @click="setSort('title')">Song</button>
+            <button class="music-sort" @click="setSort('album')">Album</button>
+            <button class="music-sort" @click="setSort('artist')">Artist</button>
+            <button class="music-sort" @click="setSort('duration')">Duration</button>
+          </div>
+          <button
+            v-for="track in sortedArtistTracks"
+            :key="itemKey(track)"
+            class="music-row"
+            :class="{ selected: isSelectedTrack(track) }"
+            @click="handleTrackClick(track, $event)"
+            @contextmenu.prevent="openContextMenu($event, track)"
+          >
+            <div class="music-title">{{ trackTitle(track) }}</div>
+            <div>{{ trackAlbum(track) }}</div>
+            <div>{{ trackArtist(track) }}</div>
+            <div>{{ formatDuration(track.duration) || '--' }}</div>
+          </button>
+        </div>
       </div>
 
-      <div v-if="hasMore" class="empty-state">
-        <button class="action-btn secondary" @click="loadMore">Load more</button>
-      </div>
       <div ref="sentinel" class="scroll-sentinel"></div>
     </main>
 

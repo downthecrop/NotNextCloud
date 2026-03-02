@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const fs = require('fs');
+const path = require('path');
 const mime = require('mime-types');
 const { sendError } = require('../lib/response');
 const { resolveMimeType, sendFileResponse } = require('../lib/fileResponse');
@@ -16,7 +17,7 @@ function albumKeyFor(artist, album) {
 }
 
 function registerFileRoutes(fastify, ctx) {
-  const { config, db, previewCachePath, ensurePreview, previewQueue, safeJoin, normalizeRelPath } =
+  const { config, db, previewCachePath, previewQueue, safeJoin, normalizeRelPath } =
     ctx;
   const statFileIfNotSymlink = async (fullPath) => {
     let linkStats;
@@ -45,6 +46,24 @@ function registerFileRoutes(fastify, ctx) {
       safeJoin,
       reply,
     });
+
+  fastify.get('/thumbs/:key.jpg', async (request, reply) => {
+    const key = String(request.params?.key || '').toLowerCase();
+    if (!/^[a-f0-9]{40}$/.test(key)) {
+      return sendError(reply, 400, 'invalid_thumb', 'Invalid thumbnail key');
+    }
+    const fullPath = path.join(config.previewDir, `${key}.jpg`);
+    const { stats, missing, symlink } = await statFileIfNotSymlink(fullPath);
+    if (missing || !stats?.isFile()) {
+      return sendError(reply, 404, 'not_found', 'Not found');
+    }
+    if (symlink) {
+      return sendError(reply, 400, 'invalid_path', 'Symlinks are not supported');
+    }
+    reply.header('Content-Type', 'image/jpeg');
+    reply.header('Cache-Control', 'public, max-age=31536000, immutable');
+    return reply.send(fs.createReadStream(fullPath));
+  });
 
   fastify.get('/api/file', async (request, reply) => {
     const resolved = resolveRootAndPath(request.query, reply);
@@ -83,19 +102,26 @@ function registerFileRoutes(fastify, ctx) {
       return;
     }
     const { rootId, relPath, fullPath } = resolved;
-
-    const entry = db.getEntry.get(rootId, relPath);
-    if (!entry || entry.is_dir) {
-      return sendError(reply, 404, 'not_found', 'Not found');
-    }
-
-    const storedMime =
-      entry.mime && entry.mime !== 'application/octet-stream' ? entry.mime : null;
-    const mimeType = storedMime || mime.lookup(fullPath) || 'application/octet-stream';
-    const isImage = mimeType.startsWith('image/');
-    const isVideo = mimeType.startsWith('video/');
-    if (!isImage && !isVideo) {
-      return sendError(reply, 415, 'unsupported_media', 'Preview only available for images/videos');
+    const requestedMtime = Number(request.query?.mtime);
+    const hasRequestedMtime = Number.isFinite(requestedMtime) && requestedMtime > 0;
+    const requestedMime =
+      typeof request.query?.mime === 'string' && request.query.mime !== ''
+        ? request.query.mime
+        : null;
+    let mtimeForPreview = hasRequestedMtime ? Math.floor(requestedMtime) : null;
+    let storedMime = requestedMime && requestedMime !== 'application/octet-stream' ? requestedMime : null;
+    let entry = null;
+    if (!mtimeForPreview || !storedMime) {
+      entry = db.getEntry.get(rootId, relPath);
+      if (!entry || entry.is_dir) {
+        return sendError(reply, 404, 'not_found', 'Not found');
+      }
+      if (!mtimeForPreview) {
+        mtimeForPreview = Number.isFinite(entry.mtime) ? Math.floor(entry.mtime) : null;
+      }
+      if (!storedMime && entry.mime && entry.mime !== 'application/octet-stream') {
+        storedMime = entry.mime;
+      }
     }
 
     const { stats, missing, symlink } = await statFileIfNotSymlink(fullPath);
@@ -106,15 +132,39 @@ function registerFileRoutes(fastify, ctx) {
       return sendError(reply, 400, 'invalid_path', 'Symlinks are not supported');
     }
 
-    const previewPath = previewCachePath(config.previewDir, rootId, relPath, entry.mtime);
+    if (!mtimeForPreview) {
+      mtimeForPreview = Math.floor(stats.mtimeMs);
+    }
+    const mimeType = storedMime || mime.lookup(fullPath) || 'application/octet-stream';
+    const isImage = mimeType.startsWith('image/');
+    const isVideo = mimeType.startsWith('video/');
+    if (!isImage && !isVideo) {
+      return sendError(reply, 415, 'unsupported_media', 'Preview only available for images/videos');
+    }
+
+    const previewPath = previewCachePath(config.previewDir, rootId, relPath, mtimeForPreview);
+    if (fs.existsSync(previewPath)) {
+      reply.header('Content-Type', 'image/jpeg');
+      reply.header('Cache-Control', 'public, max-age=31536000, immutable');
+      return reply.send(fs.createReadStream(previewPath));
+    }
+    const abortController = new AbortController();
+    const abortPreview = () => abortController.abort();
+    request.raw.once('aborted', abortPreview);
+    request.raw.once('close', abortPreview);
     try {
-      const cachedPath = await previewQueue(previewPath, () =>
-        ensurePreview({
+      const cachedPath = await previewQueue(
+        previewPath,
+        {
           fullPath,
           previewPath,
           mimeType,
-        })
+        },
+        { signal: abortController.signal, priority: 'high' }
       );
+      if (abortController.signal.aborted || reply.sent || reply.raw.destroyed) {
+        return;
+      }
 
       if (!cachedPath) {
         if (isImage) {
@@ -126,9 +176,16 @@ function registerFileRoutes(fastify, ctx) {
       }
 
       reply.header('Content-Type', 'image/jpeg');
+      reply.header('Cache-Control', 'public, max-age=31536000, immutable');
       return reply.send(fs.createReadStream(cachedPath));
     } catch (error) {
+      if (error?.name === 'AbortError') {
+        return;
+      }
       return sendError(reply, 500, 'preview_failed', 'Preview generation failed');
+    } finally {
+      request.raw.off?.('aborted', abortPreview);
+      request.raw.off?.('close', abortPreview);
     }
   });
 

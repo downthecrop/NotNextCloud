@@ -171,6 +171,7 @@ export function createApiClient({
         makeUrlFactory(routePath, { token: true }),
       ])
     ),
+    thumb: ({ key } = {}) => resolvePath(`/thumbs/${encodeURIComponent(String(key || ''))}.jpg`),
   };
 
   return {

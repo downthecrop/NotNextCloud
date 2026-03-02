@@ -3,6 +3,7 @@ import { ref } from 'vue';
 export function useSort({ initialKey = '', initialDir = 'asc' } = {}) {
   const sortKey = ref(initialKey);
   const sortDir = ref(initialDir);
+  const collator = new Intl.Collator(undefined, { sensitivity: 'base', numeric: true });
 
   const setSort = (nextKey) => {
     if (sortKey.value === nextKey) {
@@ -13,8 +14,7 @@ export function useSort({ initialKey = '', initialDir = 'asc' } = {}) {
     sortDir.value = 'asc';
   };
 
-  const compareText = (a, b) =>
-    String(a || '').localeCompare(String(b || ''), undefined, { sensitivity: 'base' });
+  const compareText = (a, b) => collator.compare(String(a || ''), String(b || ''));
 
   const sortList = (list, { getValue, numericKeys = [], tieBreak } = {}) => {
     if (!sortKey.value || !Array.isArray(list) || !list.length) {

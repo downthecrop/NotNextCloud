@@ -306,7 +306,10 @@ async function rescan(scope) {
 }
 
 async function rebuildThumbs() {
-  await apiJson(apiUrls.previewsRebuild(), { method: 'POST' });
+  const result = await apiJson(apiUrls.previewsRebuild(), { method: 'POST' });
+  if (result.ok) {
+    applyStatus(result.data?.status || status.value);
+  }
 }
 
 watch(token, (value) => {

@@ -1,4 +1,5 @@
 const mime = require('mime-types');
+const { previewCacheKey } = require('../preview');
 
 function normalizeMimeValue(row) {
   if (!row || row.is_dir) {
@@ -20,13 +21,24 @@ function toEntry(row) {
   if (!row) {
     return null;
   }
+  const mimeValue = normalizeMimeValue(row);
+  const previewKey =
+    !row.is_dir &&
+    Number.isFinite(row.mtime) &&
+    row.root_id &&
+    row.rel_path &&
+    typeof mimeValue === 'string' &&
+    (mimeValue.startsWith('image/') || mimeValue.startsWith('video/'))
+      ? previewCacheKey(row.root_id, row.rel_path, Math.floor(row.mtime))
+      : null;
   return {
     rootId: row.root_id,
     path: row.rel_path,
     name: row.name,
     size: row.size,
     mtime: row.mtime,
-    mime: normalizeMimeValue(row),
+    mime: mimeValue,
+    previewKey,
     ext: row.ext,
     isDir: Boolean(row.is_dir),
     title: row.title || null,

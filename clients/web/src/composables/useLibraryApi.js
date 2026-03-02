@@ -82,11 +82,23 @@ export function useLibraryApi() {
       extra: { type },
     });
 
-  const listAlbums = ({ rootId, pathPrefix, limit = 50, offset = 0 }) =>
-    requestWithRoot(apiUrls.musicAlbums, { rootId, pathPrefix, limit, offset });
+  const listAlbums = ({ rootId, pathPrefix, limit = 50, offset = 0, query }) =>
+    requestWithRoot(apiUrls.musicAlbums, {
+      rootId,
+      pathPrefix,
+      limit,
+      offset,
+      q: query || undefined,
+    });
 
-  const listArtists = ({ rootId, pathPrefix, limit = 50, offset = 0 }) =>
-    requestWithRoot(apiUrls.musicArtists, { rootId, pathPrefix, limit, offset });
+  const listArtists = ({ rootId, pathPrefix, limit = 50, offset = 0, query }) =>
+    requestWithRoot(apiUrls.musicArtists, {
+      rootId,
+      pathPrefix,
+      limit,
+      offset,
+      q: query || undefined,
+    });
 
   const listAlbumTracks = ({ rootId, key, pathPrefix }) =>
     requestWithRoot(apiUrls.musicAlbum, { rootId, pathPrefix, key });

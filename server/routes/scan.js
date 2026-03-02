@@ -90,8 +90,15 @@ function registerScanRoutes(fastify, ctx) {
 
   fastify.post('/api/previews/rebuild', async () => {
     await clearPreviewCache(config.previewDir);
-    ctx.db.db.exec('DELETE FROM album_art');
-    return sendOk({ cleared: true });
+    const status = indexer.getStatus();
+    let rebuildStarted = false;
+    if (!status.scanInProgress) {
+      rebuildStarted = true;
+      indexer.scanAll({ fastScan: false }).catch((error) => {
+        fastify.log.error({ err: error }, 'Preview rebuild scan failed');
+      });
+    }
+    return sendOk({ cleared: true, rebuildStarted, status: indexer.getStatus() });
   });
 }
 

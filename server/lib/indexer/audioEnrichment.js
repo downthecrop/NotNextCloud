@@ -5,6 +5,7 @@ const mime = require('mime-types');
 
 let musicMetadata = null;
 let musicMetadataLoading = null;
+const NON_TRACK_AUDIO_EXT = new Set(['.m3u', '.m3u8', '.pls', '.xspf', '.asx', '.cue']);
 
 async function getMusicMetadata() {
   if (musicMetadata !== null) {
@@ -24,12 +25,22 @@ async function getMusicMetadata() {
   return musicMetadata;
 }
 
-function albumKeyFor(artist, album) {
-  const safeArtist = artist || 'Unknown Artist';
-  const safeAlbum = album || 'Unknown Album';
+function albumKeyFor({ albumArtist = '', artist = '', album = '', parent = '' } = {}) {
+  const normalizedAlbum = normalizeMetadataText(album).toLowerCase() || 'unknown album';
+  const normalizedAlbumArtist = normalizeMetadataText(albumArtist).toLowerCase();
+  const normalizedArtist = normalizeMetadataText(artist).toLowerCase();
+  const normalizedParent = normalizeMetadataText(parent).toLowerCase();
+  let scope = 'artist:unknown artist';
+  if (normalizedAlbumArtist) {
+    scope = `albumartist:${normalizedAlbumArtist}`;
+  } else if (normalizedParent) {
+    scope = `folder:${normalizedParent}`;
+  } else if (normalizedArtist) {
+    scope = `artist:${normalizedArtist}`;
+  }
   return crypto
     .createHash('sha1')
-    .update(`${safeArtist.toLowerCase()}::${safeAlbum.toLowerCase()}`)
+    .update(`${scope}::${normalizedAlbum}`)
     .digest('hex');
 }
 
@@ -100,20 +111,55 @@ function normalizeDurationSeconds(value) {
   return numeric;
 }
 
-function resolveAudioDuration(format) {
-  const direct = normalizeDurationSeconds(format?.duration);
-  if (direct !== null) {
-    return direct;
-  }
+function resolveAudioDuration(format, fallbackSizeBytes = null) {
   const sampleRate = Number(format?.sampleRate);
   const numberOfSamples = Number(format?.numberOfSamples);
-  if (Number.isFinite(sampleRate) && sampleRate > 0 && Number.isFinite(numberOfSamples) && numberOfSamples > 0) {
-    return normalizeDurationSeconds(numberOfSamples / sampleRate);
-  }
+  const formatSize = Number(format?.size);
+  const size =
+    Number.isFinite(formatSize) && formatSize > 0
+      ? formatSize
+      : Number.isFinite(Number(fallbackSizeBytes)) && Number(fallbackSizeBytes) > 0
+        ? Number(fallbackSizeBytes)
+        : null;
   const bitrate = Number(format?.bitrate);
-  const size = Number(format?.size);
-  if (Number.isFinite(bitrate) && bitrate > 0 && Number.isFinite(size) && size > 0) {
-    return normalizeDurationSeconds((size * 8) / bitrate);
+  const direct = normalizeDurationSeconds(format?.duration);
+  const sampleEstimate =
+    Number.isFinite(sampleRate) && sampleRate > 0 && Number.isFinite(numberOfSamples) && numberOfSamples > 0
+      ? normalizeDurationSeconds(numberOfSamples / sampleRate)
+      : null;
+  const bitrateEstimate =
+    Number.isFinite(bitrate) && bitrate > 0 && Number.isFinite(size) && size > 0
+      ? normalizeDurationSeconds((size * 8) / bitrate)
+      : null;
+
+  // Ogg/Vorbis files can occasionally report a tiny bogus duration while still exposing
+  // usable bitrate/size metadata. Prefer metadata-derived estimates in that case.
+  const directLooksBrokenForLargeFile =
+    direct !== null &&
+    Number.isFinite(size) &&
+    size >= 1024 * 1024 &&
+    direct < 5 &&
+    ((bitrateEstimate !== null && bitrateEstimate >= 15) ||
+      (sampleEstimate !== null && sampleEstimate >= 15));
+  const sampleLooksBrokenForLargeFile =
+    sampleEstimate !== null &&
+    Number.isFinite(size) &&
+    size >= 1024 * 1024 &&
+    sampleEstimate < 5 &&
+    ((bitrateEstimate !== null && bitrateEstimate >= 15) ||
+      (direct !== null && direct >= 15));
+
+  if (direct !== null && !directLooksBrokenForLargeFile) {
+    return direct;
+  }
+  if (bitrateEstimate !== null) {
+    return bitrateEstimate;
+  }
+  if (sampleEstimate !== null && !sampleLooksBrokenForLargeFile) {
+    return sampleEstimate;
+  }
+  if (direct !== null) {
+    return direct;
   }
   return null;
 }
@@ -124,6 +170,7 @@ async function enrichAudioEntry({
   isSameStat,
   extractMetadata = true,
   fullPath,
+  fileSize,
   relPath,
   parent,
   name,
@@ -143,6 +190,9 @@ async function enrichAudioEntry({
   if (!safeMime || !safeMime.startsWith('audio/')) {
     return emptyResult;
   }
+  if (NON_TRACK_AUDIO_EXT.has(path.extname(name || '').toLowerCase())) {
+    return emptyResult;
+  }
 
   let title = null;
   let artist = null;
@@ -155,7 +205,14 @@ async function enrichAudioEntry({
     artist = existingEntry.artist;
     album = existingEntry.album;
     duration = existingEntry.duration;
-    albumKey = existingEntry.album_key;
+    // Preserve previously-derived grouping when file stats are unchanged.
+    albumKey =
+      existingEntry.album_key ||
+      albumKeyFor({
+        artist: existingEntry.artist,
+        album: existingEntry.album,
+        parent,
+      });
   } else {
     const metadataLib = await getMusicMetadata();
     if (extractMetadata && metadataLib) {
@@ -175,8 +232,13 @@ async function enrichAudioEntry({
         title = normalizedTitle || path.parse(name).name;
         artist = normalizedArtist || normalizedAlbumArtist || 'Unknown Artist';
         album = normalizedAlbum || parentFolder || 'Unknown Album';
-        duration = resolveAudioDuration(metadata.format);
-        albumKey = albumKeyFor(normalizedAlbumArtist || artist, album);
+        duration = resolveAudioDuration(metadata.format, fileSize);
+        albumKey = albumKeyFor({
+          albumArtist: normalizedAlbumArtist,
+          artist,
+          album,
+          parent,
+        });
 
         if (Array.isArray(common.picture) && common.picture.length && albumKey) {
           const hasArt = getAlbumArtPresence({ db, albumKey, albumArtCache });
@@ -201,14 +263,14 @@ async function enrichAudioEntry({
         title = path.parse(name).name;
         artist = 'Unknown Artist';
         album = parentFolder || 'Unknown Album';
-        albumKey = albumKeyFor(artist, album);
+        albumKey = albumKeyFor({ artist, album, parent });
       }
     } else {
       const parentFolder = parent ? path.basename(parent) : '';
       title = path.parse(name).name;
       artist = 'Unknown Artist';
       album = parentFolder || 'Unknown Album';
-      albumKey = albumKeyFor(artist, album);
+      albumKey = albumKeyFor({ artist, album, parent });
     }
   }
 

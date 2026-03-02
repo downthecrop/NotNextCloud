@@ -7,7 +7,7 @@ const { loadConfig } = require('./configParser');
 const { initDb, ENTRY_COLUMNS, ENTRY_SELECT, ENTRY_SELECT_WITH_ID } = require('./db');
 const { createIndexer } = require('./indexer');
 const { safeJoin, normalizeRelPath, normalizeParent } = require('./utils');
-const { previewCachePath, ensurePreview } = require('./preview');
+const { previewCachePath } = require('./preview');
 
 const { sendOk, sendError } = require('./lib/response');
 const { getRequestToken } = require('./lib/auth');
@@ -114,13 +114,18 @@ fastify.addHook('onSend', async (request, reply, payload) => {
 const sessions = new Map();
 
 fastify.addHook('onRequest', async (request, reply) => {
-  if (!request.raw.url.startsWith('/api')) {
+  const isApiRoute = request.raw.url.startsWith('/api');
+  const isThumbRoute = request.raw.url.startsWith('/thumbs/');
+  if (!isApiRoute && !isThumbRoute) {
     return;
   }
   if (config.devMode) {
     return;
   }
-  if (request.raw.url.startsWith('/api/login') || request.raw.url.startsWith('/api/health')) {
+  if (
+    request.raw.url.startsWith('/api/login') ||
+    request.raw.url.startsWith('/api/health')
+  ) {
     return;
   }
 
@@ -141,10 +146,12 @@ fastify.addHook('onRequest', async (request, reply) => {
   }
 });
 
-const indexer = createIndexer(config, db, fastify.log);
-indexer.start();
-
 const previewQueue = createPreviewQueue({ concurrency: config.previewConcurrency });
+const indexer = createIndexer(config, db, fastify.log, {
+  previewQueue,
+  previewCachePath,
+});
+indexer.start();
 
 if (SESSION_TTL_MS > 0) {
   const cleanupIntervalMs = Math.min(SESSION_TTL_MS, 60 * 60 * 1000);
@@ -170,7 +177,6 @@ const ctx = {
   normalizeRelPath,
   normalizeParent,
   previewCachePath,
-  ensurePreview,
   previewQueue,
   clearPreviewCache,
   entrySelect: ENTRY_SELECT,

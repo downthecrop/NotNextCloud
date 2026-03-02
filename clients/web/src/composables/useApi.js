@@ -28,8 +28,19 @@ export function useApi() {
   const fileUrl = (rootId, path) =>
     tokenRouteUrl(apiUrls?.file, '/api/file', { root: rootId, path });
 
-  const previewUrl = (rootId, path) =>
-    tokenRouteUrl(apiUrls?.preview, '/api/preview', { root: rootId, path });
+  const previewUrl = (rootId, path, options = {}) =>
+    typeof options?.previewKey === 'string' && options.previewKey
+      ? withToken(
+          apiUrls?.thumb
+            ? apiUrls.thumb({ key: options.previewKey })
+            : `/thumbs/${encodeURIComponent(options.previewKey)}.jpg`
+        )
+      : tokenRouteUrl(apiUrls?.preview, '/api/preview', {
+          root: rootId,
+          path,
+          mtime: Number.isFinite(options?.mtime) ? Math.floor(options.mtime) : undefined,
+          mime: typeof options?.mime === 'string' ? options.mime : undefined,
+        });
 
   const downloadUrl = (rootId, path) =>
     tokenRouteUrl(apiUrls?.file, '/api/file', { root: rootId, path, download: 1 });

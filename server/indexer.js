@@ -8,8 +8,34 @@ const { createBatchWriter } = require('./lib/indexer/batchWriter');
 const { buildFolderArtMapForDir, updateFolderArtMap } = require('./lib/indexer/folderArt');
 const { enrichAudioEntry } = require('./lib/indexer/audioEnrichment');
 
+const IGNORED_ENTRY_NAMES = new Set(['.ds_store', '._.ds_store']);
+const PREVIEW_CACHE_FILE_RE = /^[a-f0-9]{40}\.jpg$/i;
+
 function toStatNumber(value) {
   return Number.isFinite(value) ? value : null;
+}
+
+function isIgnoredEntryName(name) {
+  return typeof name === 'string' && IGNORED_ENTRY_NAMES.has(name.toLowerCase());
+}
+
+async function countPreviewCacheFiles(previewDir) {
+  if (!previewDir) {
+    return 0;
+  }
+  let dirents;
+  try {
+    dirents = await fs.promises.readdir(previewDir, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+  let count = 0;
+  for (const dirent of dirents) {
+    if (dirent.isFile() && PREVIEW_CACHE_FILE_RE.test(dirent.name)) {
+      count += 1;
+    }
+  }
+  return count;
 }
 
 function updateProgress(progress, relPath, isDir) {
@@ -50,6 +76,60 @@ function hasMissingOrZeroDuration(value) {
 
 function hasTrimMismatch(value) {
   return typeof value === 'string' && value.trim() !== value;
+}
+
+function isSameNullableValue(left, right) {
+  if (left === undefined || left === null || left === '') {
+    return right === undefined || right === null || right === '';
+  }
+  if (right === undefined || right === null || right === '') {
+    return false;
+  }
+  return left === right;
+}
+
+function isPreviewMimeType(mimeType) {
+  return (
+    typeof mimeType === 'string' &&
+    (mimeType.startsWith('image/') || mimeType.startsWith('video/'))
+  );
+}
+
+function createPreviewWarmup({
+  config,
+  previewQueue,
+  previewCachePath,
+  logger,
+  enabled,
+}) {
+  if (
+    !enabled ||
+    typeof previewQueue !== 'function' ||
+    typeof previewCachePath !== 'function'
+  ) {
+    return null;
+  }
+  const schedule = async ({ rootId, relPath, mtime, fullPath, mimeType, isDir }) => {
+    if (isDir || !rootId || !relPath || !fullPath || !isPreviewMimeType(mimeType)) {
+      return;
+    }
+    const previewPath = previewCachePath(config.previewDir, rootId, relPath, mtime);
+    if (fs.existsSync(previewPath)) {
+      return;
+    }
+    previewQueue(
+      previewPath,
+      { fullPath, previewPath, mimeType },
+      { priority: 'low' }
+    )
+      .catch((error) => {
+        logger?.debug?.({ err: error, rootId, relPath }, 'Preview warmup failed');
+      });
+  };
+
+  return {
+    schedule,
+  };
 }
 
 function needsAudioMetadataBackfill({ existingEntry, isSameStat, safeMime, scanOptions }) {
@@ -155,6 +235,7 @@ async function processEntry({
     isSameStat: reuseExistingMetadata,
     extractMetadata: scanOptions?.extractAudioMetadata !== false,
     fullPath,
+    fileSize: entrySize,
     relPath,
     parent,
     name,
@@ -164,8 +245,17 @@ async function processEntry({
     db,
     logger,
   }));
+  const metadataChangedOnSameStat =
+    Boolean(existingEntry) &&
+    Boolean(isSameStat) &&
+    Boolean(safeMime && safeMime.startsWith('audio/')) &&
+    (!isSameNullableValue(existingEntry.title, title) ||
+      !isSameNullableValue(existingEntry.artist, artist) ||
+      !isSameNullableValue(existingEntry.album, album) ||
+      !isSameNullableValue(existingEntry.duration, duration) ||
+      !isSameNullableValue(existingEntry.album_key, albumKey));
 
-  if (reuseExistingMetadata && (!isDir || existingEntry)) {
+  if (reuseExistingMetadata && !metadataChangedOnSameStat && (!isDir || existingEntry)) {
     if (writer) {
       writer.enqueue(() => db.touchEntry.run(scanId, rootId, relPath));
     } else {
@@ -196,6 +286,17 @@ async function processEntry({
     } else {
       db.upsertEntry.run(payload);
     }
+  }
+
+  if (scanOptions?.previewWarmup?.schedule) {
+    await scanOptions.previewWarmup.schedule({
+      rootId,
+      relPath,
+      mtime: entryMtime,
+      fullPath,
+      mimeType: safeMime,
+      isDir,
+    });
   }
 }
 
@@ -256,6 +357,9 @@ async function scanDirectory(
 
     const resolveDirent = (dirent) =>
       enqueueFs(async () => {
+        if (isIgnoredEntryName(dirent.name)) {
+          return null;
+        }
         if (dirent.isSymbolicLink()) {
           return null;
         }
@@ -286,13 +390,14 @@ async function scanDirectory(
 
     const entryBatchSize = Math.max(32, fsConcurrency * 8);
     const processDirentBatch = async (batch) => {
-      for (const dirent of batch) {
+      const filteredBatch = batch.filter((dirent) => !isIgnoredEntryName(dirent.name));
+      for (const dirent of filteredBatch) {
         if (dirent.isFile()) {
           updateFolderArtMap(folderArtMap, currentRel, dirent.name, path.join(targetPath, dirent.name));
         }
       }
 
-      const resolvedEntries = await Promise.all(batch.map((dirent) => resolveDirent(dirent)));
+      const resolvedEntries = await Promise.all(filteredBatch.map((dirent) => resolveDirent(dirent)));
       for (const entry of resolvedEntries) {
         if (!entry) {
           continue;
@@ -464,7 +569,8 @@ async function scanRoot(root, scanId, db, logger, previewDir, scanOptions, progr
   db.cleanupOld.run(root.id, scanId);
 }
 
-function createIndexer(config, db, logger) {
+function createIndexer(config, db, logger, runtime = {}) {
+  const { previewQueue = null, previewCachePath = null } = runtime;
   let scanInProgress = false;
   let scanId = Date.now();
   let lastScanAt = null;
@@ -477,7 +583,25 @@ function createIndexer(config, db, logger) {
   let scanErrors = [];
   let rootScanStats = [];
   const countEntriesByRoot = db.db.prepare('SELECT COUNT(*) as count FROM entries WHERE root_id = ?');
+  const countPreviewCandidates = db.db.prepare(`
+    SELECT COUNT(*) as count
+    FROM entries
+    WHERE is_dir = 0 AND (mime LIKE 'image/%' OR mime LIKE 'video/%')
+  `);
   const maxScanErrors = 50;
+  const previewStatsMinRefreshMs = 15000;
+  let previewStatsLastRefreshAt = 0;
+  let previewStatsRefreshInFlight = null;
+  let thumbnailStats = {
+    created: null,
+    cachedFiles: null,
+    total: null,
+    queued: 0,
+    running: 0,
+    workersTotal: 0,
+    workersBusy: 0,
+    lastUpdatedAt: null,
+  };
 
   const estimateTotalForRoots = (roots) =>
     roots.reduce((sum, root) => sum + (countEntriesByRoot.get(root.id)?.count || 0), 0);
@@ -498,17 +622,82 @@ function createIndexer(config, db, logger) {
     currentRootIndex: 0,
   });
 
-  const createScanOptions = (fastScan) => ({
-    fastScan,
-    batchSize: Number.isFinite(config.scanBatchSize) ? Math.max(1, config.scanBatchSize) : 1,
-    fsConcurrency: Number.isFinite(config.scanFsConcurrency) ? Math.max(1, config.scanFsConcurrency) : 8,
-    preloadMaxEntriesPerDir: Number.isFinite(config.scanPreloadMaxEntriesPerDir)
-      ? Math.max(0, config.scanPreloadMaxEntriesPerDir)
-      : 0,
-    extractAudioMetadata: config.scanExtractAudioMetadata !== false,
-    albumArtCache: new Map(),
-    reportError,
-  });
+  const updatePreviewQueueStats = () => {
+    const stats = previewQueue?.getStats?.();
+    if (!stats) {
+      thumbnailStats = {
+        ...thumbnailStats,
+        queued: 0,
+        running: 0,
+        workersTotal: 0,
+        workersBusy: 0,
+      };
+      return;
+    }
+    thumbnailStats = {
+      ...thumbnailStats,
+      queued: Number(stats.queuedTotal || 0),
+      running: Number(stats.runningJobs || 0),
+      workersTotal: Number(stats.workersTotal || 0),
+      workersBusy: Number(stats.workersBusy || 0),
+    };
+  };
+
+  const refreshThumbnailStats = ({ force = false } = {}) => {
+    updatePreviewQueueStats();
+    if (previewStatsRefreshInFlight) {
+      return previewStatsRefreshInFlight;
+    }
+    const now = Date.now();
+    if (!force && now - previewStatsLastRefreshAt < previewStatsMinRefreshMs) {
+      return null;
+    }
+    previewStatsLastRefreshAt = now;
+    previewStatsRefreshInFlight = (async () => {
+      const [cachedFiles, total] = await Promise.all([
+        countPreviewCacheFiles(config.previewDir),
+        Promise.resolve(countPreviewCandidates.get()?.count || 0),
+      ]);
+      const created = Number.isFinite(total) ? Math.min(cachedFiles, total) : cachedFiles;
+      thumbnailStats = {
+        ...thumbnailStats,
+        created,
+        cachedFiles,
+        total,
+        lastUpdatedAt: Date.now(),
+      };
+    })()
+      .catch((error) => {
+        logger?.debug?.({ err: error }, 'Failed to refresh thumbnail stats');
+      })
+      .finally(() => {
+        previewStatsRefreshInFlight = null;
+      });
+    return previewStatsRefreshInFlight;
+  };
+
+  const createScanOptions = (fastScan) => {
+    return {
+      fastScan,
+      batchSize: Number.isFinite(config.scanBatchSize) ? Math.max(1, config.scanBatchSize) : 1,
+      fsConcurrency: Number.isFinite(config.scanFsConcurrency)
+        ? Math.max(1, config.scanFsConcurrency)
+        : 8,
+      preloadMaxEntriesPerDir: Number.isFinite(config.scanPreloadMaxEntriesPerDir)
+        ? Math.max(0, config.scanPreloadMaxEntriesPerDir)
+        : 0,
+      extractAudioMetadata: config.scanExtractAudioMetadata !== false,
+      albumArtCache: new Map(),
+      previewWarmup: createPreviewWarmup({
+        config,
+        previewQueue,
+        previewCachePath,
+        logger,
+        enabled: true,
+      }),
+      reportError,
+    };
+  };
 
   const setProgressRoot = (root, index, currentPath = '') => {
     if (!progress) {
@@ -685,6 +874,10 @@ function createIndexer(config, db, logger) {
           scanOptions.audioBackfillDirs = buildAudioBackfillDirSet(db, root.id);
         }
         const normalized = relPath || '';
+        if (normalized && isIgnoredEntryName(path.basename(normalized))) {
+          db.deleteEntryByPath.run(root.id, normalized);
+          return;
+        }
         const targetPath = path.join(root.absPath, normalized);
         let stats;
         try {
@@ -798,6 +991,7 @@ function createIndexer(config, db, logger) {
 
   const start = () => {
     scheduleTimers({ runImmediate: true });
+    refreshThumbnailStats({ force: true });
   };
 
   return {
@@ -805,29 +999,33 @@ function createIndexer(config, db, logger) {
     scanPath,
     start,
     reschedule: () => scheduleTimers({ runImmediate: false }),
-    getStatus: () => ({
-      lastScanAt,
-      scanInProgress,
-      scanIntervalSeconds: config.scanIntervalSeconds || 60,
-      fastScan: Boolean(config.fastScan),
-      scanFsConcurrency: Number(config.scanFsConcurrency || 8),
-      fullScanIntervalHours: Number(config.fullScanIntervalHours || 0),
-      scanErrorCount,
-      scanErrors,
-      progress: progress
-        ? {
-            ...progress,
-            percent:
-              progress.expectedTotal && progress.mode !== 'fast'
-                ? Math.min(
-                    100,
-                    Math.floor((progress.processedEntries / progress.expectedTotal) * 100)
-                  )
-                : null,
-          }
-        : null,
-      lastScanStats,
-    }),
+    getStatus: () => {
+      refreshThumbnailStats();
+      return {
+        lastScanAt,
+        scanInProgress,
+        scanIntervalSeconds: config.scanIntervalSeconds || 60,
+        fastScan: Boolean(config.fastScan),
+        scanFsConcurrency: Number(config.scanFsConcurrency || 8),
+        fullScanIntervalHours: Number(config.fullScanIntervalHours || 0),
+        scanErrorCount,
+        scanErrors,
+        progress: progress
+          ? {
+              ...progress,
+              percent:
+                progress.expectedTotal && progress.mode !== 'fast'
+                  ? Math.min(
+                      100,
+                      Math.floor((progress.processedEntries / progress.expectedTotal) * 100)
+                    )
+                  : null,
+            }
+          : null,
+        lastScanStats,
+        thumbnailStats: { ...thumbnailStats },
+      };
+    },
   };
 }
 

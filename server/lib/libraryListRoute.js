@@ -181,6 +181,10 @@ function createLibraryListRouteHandler({
       });
       rows = result.rows;
       total = result.total;
+      if (rows.length === limit) {
+        const last = rows[rows.length - 1];
+        nextCursor = encodeCursor({ id: last.id, maxId: snapshotMaxId });
+      }
     } else {
       rows = db.listChildren.all(rootId, relPath, limit, offset);
       if (includeTotal) {

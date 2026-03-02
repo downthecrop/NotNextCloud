@@ -43,9 +43,14 @@ const WHERE_PHOTOS = `is_dir = 0 AND (
   OR mime LIKE 'video/%'
   OR ext IN ('.avif', '.heic', '.heif', '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.tif', '.tiff', '.mp4', '.mov', '.m4v', '.webm', '.avi', '.mkv')
 )`;
-const WHERE_MUSIC = "is_dir = 0 AND mime LIKE 'audio/%'";
+const MUSIC_NON_TRACK_EXT = "('.m3u', '.m3u8', '.pls', '.xspf', '.asx', '.cue')";
+const MUSIC_FILTER_SQL =
+  `(mime LIKE 'audio/%' AND COALESCE(LOWER(ext), '') NOT IN ${MUSIC_NON_TRACK_EXT})`;
+const MUSIC_FILTER_SQL_E =
+  `(e.mime LIKE 'audio/%' AND COALESCE(LOWER(e.ext), '') NOT IN ${MUSIC_NON_TRACK_EXT})`;
+const WHERE_MUSIC = `is_dir = 0 AND ${MUSIC_FILTER_SQL}`;
 const WHERE_MUSIC_SEARCH =
-  "(name LIKE ? OR title LIKE ? OR artist LIKE ? OR album LIKE ?) AND mime LIKE 'audio/%'";
+  `(name LIKE ? OR title LIKE ? OR artist LIKE ? OR album LIKE ?) AND ${MUSIC_FILTER_SQL}`;
 
 function entryListSql({ where, order, withPrefix = false }) {
   const prefixClause = withPrefix ? ' AND rel_path LIKE ?' : '';
@@ -161,11 +166,30 @@ function initDb(dbPath, options = {}) {
     CREATE INDEX IF NOT EXISTS idx_entries_root_album ON entries (root_id, album_key);
     CREATE INDEX IF NOT EXISTS idx_entries_root_artist ON entries (root_id, artist);
     CREATE INDEX IF NOT EXISTS idx_entries_root_rel ON entries (root_id, rel_path);
+    CREATE INDEX IF NOT EXISTS idx_entries_root_rel_mtime ON entries (root_id, rel_path, mtime DESC);
     CREATE INDEX IF NOT EXISTS idx_entries_root_mtime ON entries (root_id, mtime);
     CREATE INDEX IF NOT EXISTS idx_entries_root_parent_order
       ON entries (root_id, parent, is_dir DESC, name COLLATE NOCASE, rel_path);
     CREATE INDEX IF NOT EXISTS idx_entries_root_mtime_order
       ON entries (root_id, is_dir, mtime DESC, name COLLATE NOCASE, rel_path);
+    CREATE INDEX IF NOT EXISTS idx_entries_audio_track_order
+      ON entries (root_id, album_key, name COLLATE NOCASE)
+      WHERE is_dir = 0 AND ${MUSIC_FILTER_SQL};
+    CREATE INDEX IF NOT EXISTS idx_entries_artist_track_order
+      ON entries (root_id, artist, album COLLATE NOCASE, name COLLATE NOCASE)
+      WHERE is_dir = 0 AND ${MUSIC_FILTER_SQL};
+    CREATE INDEX IF NOT EXISTS idx_entries_audio_timeline
+      ON entries (root_id, mtime DESC, name COLLATE NOCASE, rel_path)
+      WHERE is_dir = 0 AND ${MUSIC_FILTER_SQL};
+    CREATE INDEX IF NOT EXISTS idx_entries_photo_timeline
+      ON entries (root_id, mtime DESC, name COLLATE NOCASE, rel_path)
+      WHERE ${WHERE_PHOTOS};
+    CREATE INDEX IF NOT EXISTS idx_entries_audio_album_group
+      ON entries (root_id, album_key, album, artist, mtime DESC)
+      WHERE is_dir = 0 AND ${MUSIC_FILTER_SQL};
+    CREATE INDEX IF NOT EXISTS idx_entries_audio_artist_group
+      ON entries (root_id, artist, album_key, mtime DESC)
+      WHERE is_dir = 0 AND ${MUSIC_FILTER_SQL};
   `);
 
   db.exec(`
@@ -389,12 +413,21 @@ function initDb(dbPath, options = {}) {
   );
 
   const listAlbums = db.prepare(`
-    SELECT album_key, album, artist, COUNT(*) as tracks, MAX(mtime) as latest
+    SELECT
+      album_key,
+      MIN(COALESCE(NULLIF(TRIM(album), ''), 'Unknown Album')) as album,
+      CASE
+        WHEN COUNT(DISTINCT COALESCE(NULLIF(TRIM(artist), ''), 'Unknown Artist')) = 1
+          THEN MIN(COALESCE(NULLIF(TRIM(artist), ''), 'Unknown Artist'))
+        ELSE 'Various Artists'
+      END as artist,
+      COUNT(*) as tracks,
+      MAX(mtime) as latest
     FROM entries
     WHERE root_id = ?
       AND is_dir = 0
-      AND mime LIKE 'audio/%'
-    GROUP BY album_key, album, artist
+      AND ${MUSIC_FILTER_SQL}
+    GROUP BY album_key
     ORDER BY latest DESC, album COLLATE NOCASE
     LIMIT ? OFFSET ?
   `);
@@ -406,19 +439,28 @@ function initDb(dbPath, options = {}) {
       FROM entries
       WHERE root_id = ?
         AND is_dir = 0
-        AND mime LIKE 'audio/%'
+        AND ${MUSIC_FILTER_SQL}
       GROUP BY album_key
     ) AS albums
   `);
 
   const listAlbumsSearch = db.prepare(`
-    SELECT album_key, album, artist, COUNT(*) as tracks, MAX(mtime) as latest
+    SELECT
+      album_key,
+      MIN(COALESCE(NULLIF(TRIM(album), ''), 'Unknown Album')) as album,
+      CASE
+        WHEN COUNT(DISTINCT COALESCE(NULLIF(TRIM(artist), ''), 'Unknown Artist')) = 1
+          THEN MIN(COALESCE(NULLIF(TRIM(artist), ''), 'Unknown Artist'))
+        ELSE 'Various Artists'
+      END as artist,
+      COUNT(*) as tracks,
+      MAX(mtime) as latest
     FROM entries
     WHERE root_id = ?
       AND is_dir = 0
-      AND mime LIKE 'audio/%'
+      AND ${MUSIC_FILTER_SQL}
       AND (album LIKE ? OR artist LIKE ?)
-    GROUP BY album_key, album, artist
+    GROUP BY album_key
     ORDER BY latest DESC, album COLLATE NOCASE
     LIMIT ? OFFSET ?
   `);
@@ -430,20 +472,29 @@ function initDb(dbPath, options = {}) {
       FROM entries
       WHERE root_id = ?
         AND is_dir = 0
-        AND mime LIKE 'audio/%'
+        AND ${MUSIC_FILTER_SQL}
         AND (album LIKE ? OR artist LIKE ?)
       GROUP BY album_key
     ) AS albums
   `);
 
   const listAlbumsByPrefix = db.prepare(`
-    SELECT album_key, album, artist, COUNT(*) as tracks, MAX(mtime) as latest
+    SELECT
+      album_key,
+      MIN(COALESCE(NULLIF(TRIM(album), ''), 'Unknown Album')) as album,
+      CASE
+        WHEN COUNT(DISTINCT COALESCE(NULLIF(TRIM(artist), ''), 'Unknown Artist')) = 1
+          THEN MIN(COALESCE(NULLIF(TRIM(artist), ''), 'Unknown Artist'))
+        ELSE 'Various Artists'
+      END as artist,
+      COUNT(*) as tracks,
+      MAX(mtime) as latest
     FROM entries
     WHERE root_id = ?
       AND is_dir = 0
-      AND mime LIKE 'audio/%'
+      AND ${MUSIC_FILTER_SQL}
       AND rel_path LIKE ?
-    GROUP BY album_key, album, artist
+    GROUP BY album_key
     ORDER BY latest DESC, album COLLATE NOCASE
     LIMIT ? OFFSET ?
   `);
@@ -455,21 +506,30 @@ function initDb(dbPath, options = {}) {
       FROM entries
       WHERE root_id = ?
         AND is_dir = 0
-        AND mime LIKE 'audio/%'
+        AND ${MUSIC_FILTER_SQL}
         AND rel_path LIKE ?
       GROUP BY album_key
     ) AS albums
   `);
 
   const listAlbumsByPrefixSearch = db.prepare(`
-    SELECT album_key, album, artist, COUNT(*) as tracks, MAX(mtime) as latest
+    SELECT
+      album_key,
+      MIN(COALESCE(NULLIF(TRIM(album), ''), 'Unknown Album')) as album,
+      CASE
+        WHEN COUNT(DISTINCT COALESCE(NULLIF(TRIM(artist), ''), 'Unknown Artist')) = 1
+          THEN MIN(COALESCE(NULLIF(TRIM(artist), ''), 'Unknown Artist'))
+        ELSE 'Various Artists'
+      END as artist,
+      COUNT(*) as tracks,
+      MAX(mtime) as latest
     FROM entries
     WHERE root_id = ?
       AND is_dir = 0
-      AND mime LIKE 'audio/%'
+      AND ${MUSIC_FILTER_SQL}
       AND rel_path LIKE ?
       AND (album LIKE ? OR artist LIKE ?)
-    GROUP BY album_key, album, artist
+    GROUP BY album_key
     ORDER BY latest DESC, album COLLATE NOCASE
     LIMIT ? OFFSET ?
   `);
@@ -481,10 +541,84 @@ function initDb(dbPath, options = {}) {
       FROM entries
       WHERE root_id = ?
         AND is_dir = 0
-        AND mime LIKE 'audio/%'
+        AND ${MUSIC_FILTER_SQL}
         AND rel_path LIKE ?
         AND (album LIKE ? OR artist LIKE ?)
       GROUP BY album_key
+    ) AS albums
+  `);
+
+  const listAlbumsSearchFts = db.prepare(`
+    SELECT
+      e.album_key,
+      MIN(COALESCE(NULLIF(TRIM(e.album), ''), 'Unknown Album')) as album,
+      CASE
+        WHEN COUNT(DISTINCT COALESCE(NULLIF(TRIM(e.artist), ''), 'Unknown Artist')) = 1
+          THEN MIN(COALESCE(NULLIF(TRIM(e.artist), ''), 'Unknown Artist'))
+        ELSE 'Various Artists'
+      END as artist,
+      COUNT(*) as tracks,
+      MAX(e.mtime) as latest
+    FROM entries_fts
+    JOIN entries e ON e.id = entries_fts.rowid
+    WHERE entries_fts MATCH ?
+      AND e.root_id = ?
+      AND e.is_dir = 0
+      AND ${MUSIC_FILTER_SQL_E}
+    GROUP BY e.album_key
+    ORDER BY latest DESC, album COLLATE NOCASE
+    LIMIT ? OFFSET ?
+  `);
+
+  const countAlbumsSearchFts = db.prepare(`
+    SELECT COUNT(*) as count
+    FROM (
+      SELECT e.album_key
+      FROM entries_fts
+      JOIN entries e ON e.id = entries_fts.rowid
+      WHERE entries_fts MATCH ?
+        AND e.root_id = ?
+        AND e.is_dir = 0
+        AND ${MUSIC_FILTER_SQL_E}
+      GROUP BY e.album_key
+    ) AS albums
+  `);
+
+  const listAlbumsByPrefixSearchFts = db.prepare(`
+    SELECT
+      e.album_key,
+      MIN(COALESCE(NULLIF(TRIM(e.album), ''), 'Unknown Album')) as album,
+      CASE
+        WHEN COUNT(DISTINCT COALESCE(NULLIF(TRIM(e.artist), ''), 'Unknown Artist')) = 1
+          THEN MIN(COALESCE(NULLIF(TRIM(e.artist), ''), 'Unknown Artist'))
+        ELSE 'Various Artists'
+      END as artist,
+      COUNT(*) as tracks,
+      MAX(e.mtime) as latest
+    FROM entries_fts
+    JOIN entries e ON e.id = entries_fts.rowid
+    WHERE entries_fts MATCH ?
+      AND e.root_id = ?
+      AND e.is_dir = 0
+      AND ${MUSIC_FILTER_SQL_E}
+      AND e.rel_path LIKE ?
+    GROUP BY e.album_key
+    ORDER BY latest DESC, album COLLATE NOCASE
+    LIMIT ? OFFSET ?
+  `);
+
+  const countAlbumsByPrefixSearchFts = db.prepare(`
+    SELECT COUNT(*) as count
+    FROM (
+      SELECT e.album_key
+      FROM entries_fts
+      JOIN entries e ON e.id = entries_fts.rowid
+      WHERE entries_fts MATCH ?
+        AND e.root_id = ?
+        AND e.is_dir = 0
+        AND ${MUSIC_FILTER_SQL_E}
+        AND e.rel_path LIKE ?
+      GROUP BY e.album_key
     ) AS albums
   `);
 
@@ -493,7 +627,7 @@ function initDb(dbPath, options = {}) {
     FROM entries
     WHERE root_id = ?
       AND is_dir = 0
-      AND mime LIKE 'audio/%'
+      AND ${MUSIC_FILTER_SQL}
     GROUP BY artist
     ORDER BY latest DESC, artist COLLATE NOCASE
     LIMIT ? OFFSET ?
@@ -506,7 +640,7 @@ function initDb(dbPath, options = {}) {
       FROM entries
       WHERE root_id = ?
         AND is_dir = 0
-        AND mime LIKE 'audio/%'
+        AND ${MUSIC_FILTER_SQL}
       GROUP BY artist
     ) AS artists
   `);
@@ -516,7 +650,7 @@ function initDb(dbPath, options = {}) {
     FROM entries
     WHERE root_id = ?
       AND is_dir = 0
-      AND mime LIKE 'audio/%'
+      AND ${MUSIC_FILTER_SQL}
       AND artist LIKE ?
     GROUP BY artist
     ORDER BY latest DESC, artist COLLATE NOCASE
@@ -530,7 +664,7 @@ function initDb(dbPath, options = {}) {
       FROM entries
       WHERE root_id = ?
         AND is_dir = 0
-        AND mime LIKE 'audio/%'
+        AND ${MUSIC_FILTER_SQL}
         AND artist LIKE ?
       GROUP BY artist
     ) AS artists
@@ -541,7 +675,7 @@ function initDb(dbPath, options = {}) {
     FROM entries
     WHERE root_id = ?
       AND is_dir = 0
-      AND mime LIKE 'audio/%'
+      AND ${MUSIC_FILTER_SQL}
       AND rel_path LIKE ?
     GROUP BY artist
     ORDER BY latest DESC, artist COLLATE NOCASE
@@ -555,7 +689,7 @@ function initDb(dbPath, options = {}) {
       FROM entries
       WHERE root_id = ?
         AND is_dir = 0
-        AND mime LIKE 'audio/%'
+        AND ${MUSIC_FILTER_SQL}
         AND rel_path LIKE ?
       GROUP BY artist
     ) AS artists
@@ -566,7 +700,7 @@ function initDb(dbPath, options = {}) {
     FROM entries
     WHERE root_id = ?
       AND is_dir = 0
-      AND mime LIKE 'audio/%'
+      AND ${MUSIC_FILTER_SQL}
       AND rel_path LIKE ?
       AND artist LIKE ?
     GROUP BY artist
@@ -581,10 +715,74 @@ function initDb(dbPath, options = {}) {
       FROM entries
       WHERE root_id = ?
         AND is_dir = 0
-        AND mime LIKE 'audio/%'
+        AND ${MUSIC_FILTER_SQL}
         AND rel_path LIKE ?
         AND artist LIKE ?
       GROUP BY artist
+    ) AS artists
+  `);
+
+  const listArtistsSearchFts = db.prepare(`
+    SELECT
+      COALESCE(NULLIF(TRIM(e.artist), ''), 'Unknown Artist') as artist,
+      COUNT(*) as tracks,
+      COUNT(DISTINCT e.album_key) as albums,
+      MAX(e.mtime) as latest
+    FROM entries_fts
+    JOIN entries e ON e.id = entries_fts.rowid
+    WHERE entries_fts MATCH ?
+      AND e.root_id = ?
+      AND e.is_dir = 0
+      AND ${MUSIC_FILTER_SQL_E}
+    GROUP BY COALESCE(NULLIF(TRIM(e.artist), ''), 'Unknown Artist')
+    ORDER BY latest DESC, artist COLLATE NOCASE
+    LIMIT ? OFFSET ?
+  `);
+
+  const countArtistsSearchFts = db.prepare(`
+    SELECT COUNT(*) as count
+    FROM (
+      SELECT COALESCE(NULLIF(TRIM(e.artist), ''), 'Unknown Artist') as artist
+      FROM entries_fts
+      JOIN entries e ON e.id = entries_fts.rowid
+      WHERE entries_fts MATCH ?
+        AND e.root_id = ?
+        AND e.is_dir = 0
+        AND ${MUSIC_FILTER_SQL_E}
+      GROUP BY COALESCE(NULLIF(TRIM(e.artist), ''), 'Unknown Artist')
+    ) AS artists
+  `);
+
+  const listArtistsByPrefixSearchFts = db.prepare(`
+    SELECT
+      COALESCE(NULLIF(TRIM(e.artist), ''), 'Unknown Artist') as artist,
+      COUNT(*) as tracks,
+      COUNT(DISTINCT e.album_key) as albums,
+      MAX(e.mtime) as latest
+    FROM entries_fts
+    JOIN entries e ON e.id = entries_fts.rowid
+    WHERE entries_fts MATCH ?
+      AND e.root_id = ?
+      AND e.is_dir = 0
+      AND ${MUSIC_FILTER_SQL_E}
+      AND e.rel_path LIKE ?
+    GROUP BY COALESCE(NULLIF(TRIM(e.artist), ''), 'Unknown Artist')
+    ORDER BY latest DESC, artist COLLATE NOCASE
+    LIMIT ? OFFSET ?
+  `);
+
+  const countArtistsByPrefixSearchFts = db.prepare(`
+    SELECT COUNT(*) as count
+    FROM (
+      SELECT COALESCE(NULLIF(TRIM(e.artist), ''), 'Unknown Artist') as artist
+      FROM entries_fts
+      JOIN entries e ON e.id = entries_fts.rowid
+      WHERE entries_fts MATCH ?
+        AND e.root_id = ?
+        AND e.is_dir = 0
+        AND ${MUSIC_FILTER_SQL_E}
+        AND e.rel_path LIKE ?
+      GROUP BY COALESCE(NULLIF(TRIM(e.artist), ''), 'Unknown Artist')
     ) AS artists
   `);
 
@@ -649,7 +847,7 @@ function initDb(dbPath, options = {}) {
     FROM entries
     WHERE root_id = ?
       AND is_dir = 0
-      AND mime LIKE 'audio/%'
+      AND ${MUSIC_FILTER_SQL}
       AND (
         duration IS NULL
         OR duration <= 0
@@ -774,6 +972,12 @@ function initDb(dbPath, options = {}) {
     };
   });
 
+  try {
+    db.pragma('optimize');
+  } catch {
+    // ignore optimize pragma failures on older SQLite builds
+  }
+
   return {
     db,
     ftsEnabled,
@@ -806,6 +1010,10 @@ function initDb(dbPath, options = {}) {
     listAlbumsByPrefixSearch,
     countAlbumsByPrefix,
     countAlbumsByPrefixSearch,
+    listAlbumsSearchFts,
+    countAlbumsSearchFts,
+    listAlbumsByPrefixSearchFts,
+    countAlbumsByPrefixSearchFts,
     listArtists,
     listArtistsSearch,
     countArtists,
@@ -814,6 +1022,10 @@ function initDb(dbPath, options = {}) {
     listArtistsByPrefixSearch,
     countArtistsByPrefix,
     countArtistsByPrefixSearch,
+    listArtistsSearchFts,
+    countArtistsSearchFts,
+    listArtistsByPrefixSearchFts,
+    countArtistsByPrefixSearchFts,
     listAlbumTracks,
     listAlbumTracksByPrefix,
     listArtistTracks,

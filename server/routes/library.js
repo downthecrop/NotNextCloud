@@ -1,3 +1,5 @@
+const fs = require('fs');
+const mime = require('mime-types');
 const { sendOk, sendError, sendList } = require('../lib/response');
 const { encodeCursor } = require('../lib/cursor');
 const { parseNameCursor, parseMtimeCursor } = require('../lib/cursorParse');
@@ -17,14 +19,93 @@ const {
   buildFtsQuery,
   listAlbumsAll,
   listAlbumsAllSearch,
+  listAlbumsAllSearchFts,
   listArtistsAll,
   listArtistsAllSearch,
+  listArtistsAllSearchFts,
   listAlbumTracksAll,
   listArtistTracksAll,
 } = require('../lib/queries');
 
 function registerLibraryRoutes(fastify, ctx) {
-  const { config, db, entrySelect, entrySelectWithId, entryColumns, allRootsId } = ctx;
+  const {
+    config,
+    db,
+    entrySelect,
+    entrySelectWithId,
+    entryColumns,
+    allRootsId,
+    previewQueue,
+    previewCachePath,
+    safeJoin,
+  } = ctx;
+  const albumArtByCountStmtCache = new Map();
+  const rootsById = new Map((config.roots || []).map((root) => [root.id, root]));
+
+  const queuePhotoPreviewWarmup = (rows) => {
+    if (typeof previewQueue !== 'function' || typeof previewCachePath !== 'function') {
+      return;
+    }
+    if (!Array.isArray(rows) || !rows.length) {
+      return;
+    }
+    for (const row of rows) {
+      if (!row?.root_id || !row?.rel_path || !Number.isFinite(row?.mtime)) {
+        continue;
+      }
+      const root = rootsById.get(row.root_id);
+      if (!root?.absPath) {
+        continue;
+      }
+      const mimeType =
+        row.mime && row.mime !== 'application/octet-stream'
+          ? row.mime
+          : mime.lookup(row.rel_path || row.name || row.ext || '') || 'application/octet-stream';
+      if (!mimeType.startsWith('image/') && !mimeType.startsWith('video/')) {
+        continue;
+      }
+      let fullPath;
+      try {
+        fullPath = safeJoin(root.absPath, row.rel_path);
+      } catch {
+        continue;
+      }
+      const previewPath = previewCachePath(config.previewDir, row.root_id, row.rel_path, row.mtime);
+      if (fs.existsSync(previewPath)) {
+        continue;
+      }
+      previewQueue(
+        previewPath,
+        { fullPath, previewPath, mimeType },
+        { priority: 'low' }
+      ).catch(() => {});
+    }
+  };
+
+  const getAlbumArtByKeys = (albumKeys) => {
+    const deduped = Array.from(
+      new Set(
+        (Array.isArray(albumKeys) ? albumKeys : []).filter(
+          (key) => typeof key === 'string' && key
+        )
+      )
+    );
+    if (!deduped.length) {
+      return new Map();
+    }
+    const count = deduped.length;
+    let stmt = albumArtByCountStmtCache.get(count);
+    if (!stmt) {
+      const placeholders = deduped.map(() => '?').join(', ');
+      stmt = db.db.prepare(
+        `SELECT album_key, path FROM album_art WHERE album_key IN (${placeholders})`
+      );
+      albumArtByCountStmtCache.set(count, stmt);
+    }
+    const rows = stmt.all(...deduped);
+    return new Map(rows.map((row) => [row.album_key, row]));
+  };
+
   const resolveScopeOrReply = (rootId, reply) => {
     const scope = resolveRootScope(rootId, config.roots, allRootsId);
     if (!scope) {
@@ -181,6 +262,24 @@ function registerLibraryRoutes(fastify, ctx) {
         total = db.countSearch.get(rootId, like, like, like, like)?.count || 0;
       }
     }
+    if (!nextCursor && rows.length === limit) {
+      const last = rows[rows.length - 1];
+      if (type === 'photos' || type === 'music') {
+        nextCursor = encodeCursor({
+          mtime: last.mtime,
+          name: last.name,
+          rootId: last.root_id,
+          path: last.rel_path,
+        });
+      } else {
+        nextCursor = encodeCursor({
+          isDir: last.is_dir,
+          name: last.name,
+          rootId: last.root_id,
+          path: last.rel_path,
+        });
+      }
+    }
     const items = toEntryList(rows);
     return sendList(items, total, limit, cursor ? 0 : offset, nextCursor);
   });
@@ -269,7 +368,19 @@ function registerLibraryRoutes(fastify, ctx) {
       }
     }
 
+    if (!nextCursor && rows.length === limit) {
+      const last = rows[rows.length - 1];
+      nextCursor = encodeCursor({
+        mtime: last.mtime,
+        name: last.name,
+        rootId: last.root_id,
+        path: last.rel_path,
+      });
+    }
     const items = toEntryList(rows);
+    if (type === 'photos') {
+      queuePhotoPreviewWarmup(rows);
+    }
 
     return sendList(items, total, limit, cursor ? 0 : offset, nextCursor);
   });
@@ -282,25 +393,42 @@ function registerLibraryRoutes(fastify, ctx) {
     }
     const query = (request.query.q || '').trim();
     const like = query ? `%${query}%` : null;
+    const ftsQuery = query && db.ftsEnabled ? buildFtsQuery(query, ['album', 'artist']) : '';
     const { limit, offset } = parsePagination(request.query);
     const prefixLike = makePrefixLike(request.query.pathPrefix);
     let rows = [];
     let total = 0;
     if (scope.isAll) {
-      const results = like
-        ? listAlbumsAllSearch({
+      const results = ftsQuery
+        ? listAlbumsAllSearchFts({
             db: db.db,
             rootIds: scope.rootIds,
             prefixLike,
             limit,
             offset,
-            like,
+            ftsQuery,
           })
-        : listAlbumsAll({ db: db.db, rootIds: scope.rootIds, prefixLike, limit, offset });
+        : like
+          ? listAlbumsAllSearch({
+              db: db.db,
+              rootIds: scope.rootIds,
+              prefixLike,
+              limit,
+              offset,
+              like,
+            })
+          : listAlbumsAll({ db: db.db, rootIds: scope.rootIds, prefixLike, limit, offset });
       rows = results.rows;
       total = results.total;
     } else {
-      if (like) {
+      if (ftsQuery) {
+        rows = prefixLike
+          ? db.listAlbumsByPrefixSearchFts.all(ftsQuery, rootId, prefixLike, limit, offset)
+          : db.listAlbumsSearchFts.all(ftsQuery, rootId, limit, offset);
+        total = prefixLike
+          ? db.countAlbumsByPrefixSearchFts.get(ftsQuery, rootId, prefixLike)?.count || 0
+          : db.countAlbumsSearchFts.get(ftsQuery, rootId)?.count || 0;
+      } else if (like) {
         rows = prefixLike
           ? db.listAlbumsByPrefixSearch.all(rootId, prefixLike, like, like, limit, offset)
           : db.listAlbumsSearch.all(rootId, like, like, limit, offset);
@@ -316,8 +444,9 @@ function registerLibraryRoutes(fastify, ctx) {
           : db.countAlbums.get(rootId)?.count || 0;
       }
     }
+    const albumArtByKey = getAlbumArtByKeys(rows.map((row) => row.album_key));
     const items = rows.map((row) => {
-      const art = row.album_key ? db.getAlbumArt.get(row.album_key) : null;
+      const art = row.album_key ? albumArtByKey.get(row.album_key) || null : null;
       return {
         albumKey: row.album_key,
         album: row.album || 'Unknown Album',
@@ -338,25 +467,42 @@ function registerLibraryRoutes(fastify, ctx) {
     }
     const query = (request.query.q || '').trim();
     const like = query ? `%${query}%` : null;
+    const ftsQuery = query && db.ftsEnabled ? buildFtsQuery(query, ['artist']) : '';
     const { limit, offset } = parsePagination(request.query);
     const prefixLike = makePrefixLike(request.query.pathPrefix);
     let rows = [];
     let total = 0;
     if (scope.isAll) {
-      const results = like
-        ? listArtistsAllSearch({
+      const results = ftsQuery
+        ? listArtistsAllSearchFts({
             db: db.db,
             rootIds: scope.rootIds,
             prefixLike,
             limit,
             offset,
-            like,
+            ftsQuery,
           })
-        : listArtistsAll({ db: db.db, rootIds: scope.rootIds, prefixLike, limit, offset });
+        : like
+          ? listArtistsAllSearch({
+              db: db.db,
+              rootIds: scope.rootIds,
+              prefixLike,
+              limit,
+              offset,
+              like,
+            })
+          : listArtistsAll({ db: db.db, rootIds: scope.rootIds, prefixLike, limit, offset });
       rows = results.rows;
       total = results.total;
     } else {
-      if (like) {
+      if (ftsQuery) {
+        rows = prefixLike
+          ? db.listArtistsByPrefixSearchFts.all(ftsQuery, rootId, prefixLike, limit, offset)
+          : db.listArtistsSearchFts.all(ftsQuery, rootId, limit, offset);
+        total = prefixLike
+          ? db.countArtistsByPrefixSearchFts.get(ftsQuery, rootId, prefixLike)?.count || 0
+          : db.countArtistsSearchFts.get(ftsQuery, rootId)?.count || 0;
+      } else if (like) {
         rows = prefixLike
           ? db.listArtistsByPrefixSearch.all(rootId, prefixLike, like, limit, offset)
           : db.listArtistsSearch.all(rootId, like, limit, offset);

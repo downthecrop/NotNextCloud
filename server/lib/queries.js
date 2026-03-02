@@ -1,9 +1,15 @@
 const statementCache = new WeakMap();
 const PHOTO_EXT_FALLBACK =
   "('.avif', '.heic', '.heif', '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.tif', '.tiff', '.mp4', '.mov', '.m4v', '.webm', '.avi', '.mkv')";
+const MUSIC_NON_TRACK_EXT =
+  "('.m3u', '.m3u8', '.pls', '.xspf', '.asx', '.cue')";
 const PHOTOS_FILTER = `(mime LIKE 'image/%' OR mime LIKE 'video/%' OR ext IN ${PHOTO_EXT_FALLBACK})`;
 const PHOTOS_FILTER_ENTRIES =
   `(entries.mime LIKE 'image/%' OR entries.mime LIKE 'video/%' OR entries.ext IN ${PHOTO_EXT_FALLBACK})`;
+const MUSIC_FILTER =
+  `(mime LIKE 'audio/%' AND COALESCE(LOWER(ext), '') NOT IN ${MUSIC_NON_TRACK_EXT})`;
+const MUSIC_FILTER_ENTRIES =
+  `(entries.mime LIKE 'audio/%' AND COALESCE(LOWER(entries.ext), '') NOT IN ${MUSIC_NON_TRACK_EXT})`;
 
 function prepareCached(db, sql) {
   let cache = statementCache.get(db);
@@ -23,7 +29,7 @@ function listMediaAll({ db, entrySelect, rootIds, type, prefixLike, limit, offse
   if (!rootIds.length) {
     return { rows: [], total: includeTotal === false ? null : 0 };
   }
-  const typeFilter = type === 'photos' ? PHOTOS_FILTER : "mime LIKE 'audio/%'";
+  const typeFilter = type === 'photos' ? PHOTOS_FILTER : MUSIC_FILTER;
   const placeholders = rootIds.map(() => '?').join(', ');
   const rootClause = `root_id IN (${placeholders})`;
   const prefixClause = prefixLike ? ' AND rel_path LIKE ?' : '';
@@ -252,7 +258,7 @@ function listChildrenAllCursor({ db, entrySelect, rootIds, parent, limit, cursor
     total = null;
   }
   let where = baseWhere;
-  const dataParams = [...baseParams];
+  let dataParams = [...baseParams];
   ({ where, params: dataParams } = applyNameCursor({
     where,
     params: dataParams,
@@ -281,7 +287,7 @@ function listMediaAllCursor({
   if (!rootIds.length) {
     return { rows: [], total: includeTotal === false ? null : 0 };
   }
-  const typeFilter = type === 'photos' ? PHOTOS_FILTER : "mime LIKE 'audio/%'";
+  const typeFilter = type === 'photos' ? PHOTOS_FILTER : MUSIC_FILTER;
   const placeholders = rootIds.map(() => '?').join(', ');
   const rootClause = `root_id IN (${placeholders})`;
   const prefixClause = prefixLike ? ' AND rel_path LIKE ?' : '';
@@ -298,7 +304,7 @@ function listMediaAllCursor({
     total = null;
   }
   let where = baseWhere;
-  const dataParams = [...baseParams];
+  let dataParams = [...baseParams];
   ({ where, params: dataParams } = applyMtimeCursor({
     where,
     params: dataParams,
@@ -365,7 +371,7 @@ function searchFtsAll({
     typeClause = ` AND entries.is_dir = 0 AND ${PHOTOS_FILTER_ENTRIES}`;
     orderBy = 'ORDER BY entries.mtime DESC, entries.name COLLATE NOCASE';
   } else if (type === 'music') {
-    typeClause = " AND entries.is_dir = 0 AND entries.mime LIKE 'audio/%'";
+    typeClause = ` AND entries.is_dir = 0 AND ${MUSIC_FILTER_ENTRIES}`;
     orderBy = 'ORDER BY entries.mtime DESC, entries.name COLLATE NOCASE';
   }
   const where = `entries_fts MATCH ? AND ${rootClause}${typeClause}${prefixClause}`;
@@ -416,7 +422,7 @@ function searchFtsAllCursor({
     typeClause = ` AND entries.is_dir = 0 AND ${PHOTOS_FILTER_ENTRIES}`;
     orderBy = 'ORDER BY entries.mtime DESC, entries.name COLLATE NOCASE, entries.root_id, entries.rel_path';
   } else if (type === 'music') {
-    typeClause = " AND entries.is_dir = 0 AND entries.mime LIKE 'audio/%'";
+    typeClause = ` AND entries.is_dir = 0 AND ${MUSIC_FILTER_ENTRIES}`;
     orderBy = 'ORDER BY entries.mtime DESC, entries.name COLLATE NOCASE, entries.root_id, entries.rel_path';
   }
   const baseWhere = `entries_fts MATCH ? AND ${rootClause}${typeClause}${prefixClause}`;
@@ -432,7 +438,7 @@ function searchFtsAllCursor({
     total = null;
   }
   let where = baseWhere;
-  const dataParams = [...baseParams];
+  let dataParams = [...baseParams];
   if (type === 'photos' || type === 'music') {
     ({ where, params: dataParams } = applyMtimeCursor({
       where,
@@ -482,7 +488,7 @@ function searchAll({
     where = `${rootClause} AND name LIKE ? AND ${PHOTOS_FILTER}${prefixClause}`;
     params = [...rootIds, like];
   } else if (type === 'music') {
-    where = `${rootClause} AND (name LIKE ? OR title LIKE ? OR artist LIKE ? OR album LIKE ?) AND mime LIKE 'audio/%'${prefixClause}`;
+    where = `${rootClause} AND (name LIKE ? OR title LIKE ? OR artist LIKE ? OR album LIKE ?) AND ${MUSIC_FILTER}${prefixClause}`;
     params = [...rootIds, like, like, like, like];
   } else {
     where = `${rootClause} AND (name LIKE ? OR title LIKE ? OR artist LIKE ? OR album LIKE ?)${prefixClause}`;
@@ -537,7 +543,7 @@ function searchAllCursor({
     baseParams = [...rootIds, like];
     orderBy = 'ORDER BY mtime DESC, name COLLATE NOCASE, root_id, rel_path';
   } else if (type === 'music') {
-    baseWhere = `${rootClause} AND (name LIKE ? OR title LIKE ? OR artist LIKE ? OR album LIKE ?) AND mime LIKE 'audio/%'${prefixClause}`;
+    baseWhere = `${rootClause} AND (name LIKE ? OR title LIKE ? OR artist LIKE ? OR album LIKE ?) AND ${MUSIC_FILTER}${prefixClause}`;
     baseParams = [...rootIds, like, like, like, like];
     orderBy = 'ORDER BY mtime DESC, name COLLATE NOCASE, root_id, rel_path';
   } else {
@@ -555,7 +561,7 @@ function searchAllCursor({
     total = null;
   }
   let where = baseWhere;
-  const dataParams = [...baseParams];
+  let dataParams = [...baseParams];
   if (type === 'photos' || type === 'music') {
     ({ where, params: dataParams } = applyMtimeCursor({
       where,
@@ -586,16 +592,25 @@ function listAlbumsAll({ db, rootIds, prefixLike, limit, offset }) {
   const placeholders = rootIds.map(() => '?').join(', ');
   const rootClause = `root_id IN (${placeholders})`;
   const prefixClause = prefixLike ? ' AND rel_path LIKE ?' : '';
-  const baseWhere = `${rootClause} AND is_dir = 0 AND mime LIKE 'audio/%'${prefixClause}`;
+  const baseWhere = `${rootClause} AND is_dir = 0 AND ${MUSIC_FILTER}${prefixClause}`;
   const params = [...rootIds];
   if (prefixLike) {
     params.push(prefixLike);
   }
   const dataSql = `
-    SELECT album_key, album, artist, COUNT(*) as tracks, MAX(mtime) as latest
+    SELECT
+      album_key,
+      MIN(COALESCE(NULLIF(TRIM(album), ''), 'Unknown Album')) as album,
+      CASE
+        WHEN COUNT(DISTINCT COALESCE(NULLIF(TRIM(artist), ''), 'Unknown Artist')) = 1
+          THEN MIN(COALESCE(NULLIF(TRIM(artist), ''), 'Unknown Artist'))
+        ELSE 'Various Artists'
+      END as artist,
+      COUNT(*) as tracks,
+      MAX(mtime) as latest
     FROM entries
     WHERE ${baseWhere}
-    GROUP BY album_key, album, artist
+    GROUP BY album_key
     ORDER BY latest DESC, album COLLATE NOCASE
     LIMIT ? OFFSET ?
   `;
@@ -620,17 +635,26 @@ function listAlbumsAllSearch({ db, rootIds, prefixLike, limit, offset, like }) {
   const placeholders = rootIds.map(() => '?').join(', ');
   const rootClause = `root_id IN (${placeholders})`;
   const prefixClause = prefixLike ? ' AND rel_path LIKE ?' : '';
-  const baseWhere = `${rootClause} AND is_dir = 0 AND mime LIKE 'audio/%'${prefixClause}`;
+  const baseWhere = `${rootClause} AND is_dir = 0 AND ${MUSIC_FILTER}${prefixClause}`;
   const params = [...rootIds];
   if (prefixLike) {
     params.push(prefixLike);
   }
   const dataSql = `
-    SELECT album_key, album, artist, COUNT(*) as tracks, MAX(mtime) as latest
+    SELECT
+      album_key,
+      MIN(COALESCE(NULLIF(TRIM(album), ''), 'Unknown Album')) as album,
+      CASE
+        WHEN COUNT(DISTINCT COALESCE(NULLIF(TRIM(artist), ''), 'Unknown Artist')) = 1
+          THEN MIN(COALESCE(NULLIF(TRIM(artist), ''), 'Unknown Artist'))
+        ELSE 'Various Artists'
+      END as artist,
+      COUNT(*) as tracks,
+      MAX(mtime) as latest
     FROM entries
     WHERE ${baseWhere}
       AND (album LIKE ? OR artist LIKE ?)
-    GROUP BY album_key, album, artist
+    GROUP BY album_key
     ORDER BY latest DESC, album COLLATE NOCASE
     LIMIT ? OFFSET ?
   `;
@@ -649,6 +673,51 @@ function listAlbumsAllSearch({ db, rootIds, prefixLike, limit, offset, like }) {
   return { rows, total };
 }
 
+function listAlbumsAllSearchFts({ db, rootIds, prefixLike, limit, offset, ftsQuery }) {
+  if (!rootIds.length || !ftsQuery) {
+    return { rows: [], total: 0 };
+  }
+  const placeholders = rootIds.map(() => '?').join(', ');
+  const rootClause = `entries.root_id IN (${placeholders})`;
+  const prefixClause = prefixLike ? ' AND entries.rel_path LIKE ?' : '';
+  const baseWhere = `entries_fts MATCH ? AND ${rootClause} AND entries.is_dir = 0 AND ${MUSIC_FILTER_ENTRIES}${prefixClause}`;
+  const params = [ftsQuery, ...rootIds];
+  if (prefixLike) {
+    params.push(prefixLike);
+  }
+  const dataSql = `
+    SELECT
+      entries.album_key,
+      MIN(COALESCE(NULLIF(TRIM(entries.album), ''), 'Unknown Album')) as album,
+      CASE
+        WHEN COUNT(DISTINCT COALESCE(NULLIF(TRIM(entries.artist), ''), 'Unknown Artist')) = 1
+          THEN MIN(COALESCE(NULLIF(TRIM(entries.artist), ''), 'Unknown Artist'))
+        ELSE 'Various Artists'
+      END as artist,
+      COUNT(*) as tracks,
+      MAX(entries.mtime) as latest
+    FROM entries_fts
+    JOIN entries ON entries.id = entries_fts.rowid
+    WHERE ${baseWhere}
+    GROUP BY entries.album_key
+    ORDER BY latest DESC, album COLLATE NOCASE
+    LIMIT ? OFFSET ?
+  `;
+  const rows = prepareCached(db, dataSql).all(...params, limit, offset);
+  const countSql = `
+    SELECT COUNT(*) as count
+    FROM (
+      SELECT entries.album_key
+      FROM entries_fts
+      JOIN entries ON entries.id = entries_fts.rowid
+      WHERE ${baseWhere}
+      GROUP BY entries.album_key
+    ) AS albums
+  `;
+  const total = prepareCached(db, countSql).get(...params)?.count || 0;
+  return { rows, total };
+}
+
 function listArtistsAll({ db, rootIds, prefixLike, limit, offset }) {
   if (!rootIds.length) {
     return { rows: [], total: 0 };
@@ -656,7 +725,7 @@ function listArtistsAll({ db, rootIds, prefixLike, limit, offset }) {
   const placeholders = rootIds.map(() => '?').join(', ');
   const rootClause = `root_id IN (${placeholders})`;
   const prefixClause = prefixLike ? ' AND rel_path LIKE ?' : '';
-  const baseWhere = `${rootClause} AND is_dir = 0 AND mime LIKE 'audio/%'${prefixClause}`;
+  const baseWhere = `${rootClause} AND is_dir = 0 AND ${MUSIC_FILTER}${prefixClause}`;
   const params = [...rootIds];
   if (prefixLike) {
     params.push(prefixLike);
@@ -690,7 +759,7 @@ function listArtistsAllSearch({ db, rootIds, prefixLike, limit, offset, like }) 
   const placeholders = rootIds.map(() => '?').join(', ');
   const rootClause = `root_id IN (${placeholders})`;
   const prefixClause = prefixLike ? ' AND rel_path LIKE ?' : '';
-  const baseWhere = `${rootClause} AND is_dir = 0 AND mime LIKE 'audio/%'${prefixClause}`;
+  const baseWhere = `${rootClause} AND is_dir = 0 AND ${MUSIC_FILTER}${prefixClause}`;
   const params = [...rootIds];
   if (prefixLike) {
     params.push(prefixLike);
@@ -719,6 +788,46 @@ function listArtistsAllSearch({ db, rootIds, prefixLike, limit, offset, like }) 
   return { rows, total };
 }
 
+function listArtistsAllSearchFts({ db, rootIds, prefixLike, limit, offset, ftsQuery }) {
+  if (!rootIds.length || !ftsQuery) {
+    return { rows: [], total: 0 };
+  }
+  const placeholders = rootIds.map(() => '?').join(', ');
+  const rootClause = `entries.root_id IN (${placeholders})`;
+  const prefixClause = prefixLike ? ' AND entries.rel_path LIKE ?' : '';
+  const baseWhere = `entries_fts MATCH ? AND ${rootClause} AND entries.is_dir = 0 AND ${MUSIC_FILTER_ENTRIES}${prefixClause}`;
+  const params = [ftsQuery, ...rootIds];
+  if (prefixLike) {
+    params.push(prefixLike);
+  }
+  const dataSql = `
+    SELECT
+      COALESCE(NULLIF(TRIM(entries.artist), ''), 'Unknown Artist') as artist,
+      COUNT(*) as tracks,
+      COUNT(DISTINCT entries.album_key) as albums,
+      MAX(entries.mtime) as latest
+    FROM entries_fts
+    JOIN entries ON entries.id = entries_fts.rowid
+    WHERE ${baseWhere}
+    GROUP BY COALESCE(NULLIF(TRIM(entries.artist), ''), 'Unknown Artist')
+    ORDER BY latest DESC, artist COLLATE NOCASE
+    LIMIT ? OFFSET ?
+  `;
+  const rows = prepareCached(db, dataSql).all(...params, limit, offset);
+  const countSql = `
+    SELECT COUNT(*) as count
+    FROM (
+      SELECT COALESCE(NULLIF(TRIM(entries.artist), ''), 'Unknown Artist') as artist
+      FROM entries_fts
+      JOIN entries ON entries.id = entries_fts.rowid
+      WHERE ${baseWhere}
+      GROUP BY COALESCE(NULLIF(TRIM(entries.artist), ''), 'Unknown Artist')
+    ) AS artists
+  `;
+  const total = prepareCached(db, countSql).get(...params)?.count || 0;
+  return { rows, total };
+}
+
 function listAlbumTracksAll({ db, entrySelect, rootIds, albumKey, prefixLike }) {
   if (!rootIds.length) {
     return [];
@@ -726,7 +835,7 @@ function listAlbumTracksAll({ db, entrySelect, rootIds, albumKey, prefixLike }) 
   const placeholders = rootIds.map(() => '?').join(', ');
   const rootClause = `root_id IN (${placeholders})`;
   const prefixClause = prefixLike ? ' AND rel_path LIKE ?' : '';
-  const baseWhere = `${rootClause} AND album_key = ? AND is_dir = 0 AND mime LIKE 'audio/%'${prefixClause}`;
+  const baseWhere = `${rootClause} AND album_key = ? AND is_dir = 0 AND ${MUSIC_FILTER}${prefixClause}`;
   const params = [...rootIds, albumKey];
   if (prefixLike) {
     params.push(prefixLike);
@@ -746,7 +855,7 @@ function listArtistTracksAll({ db, entrySelect, rootIds, artist, prefixLike }) {
   const placeholders = rootIds.map(() => '?').join(', ');
   const rootClause = `root_id IN (${placeholders})`;
   const prefixClause = prefixLike ? ' AND rel_path LIKE ?' : '';
-  const baseWhere = `${rootClause} AND artist = ? AND is_dir = 0 AND mime LIKE 'audio/%'${prefixClause}`;
+  const baseWhere = `${rootClause} AND artist = ? AND is_dir = 0 AND ${MUSIC_FILTER}${prefixClause}`;
   const params = [...rootIds, artist];
   if (prefixLike) {
     params.push(prefixLike);
@@ -776,8 +885,10 @@ module.exports = {
   buildFtsQuery,
   listAlbumsAll,
   listAlbumsAllSearch,
+  listAlbumsAllSearchFts,
   listArtistsAll,
   listArtistsAllSearch,
+  listArtistsAllSearchFts,
   listAlbumTracksAll,
   listArtistTracksAll,
 };

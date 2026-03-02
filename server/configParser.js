@@ -78,8 +78,8 @@ function loadConfig(projectRoot) {
     previewConcurrency: Number.isFinite(config.previewConcurrency)
       ? Math.max(1, config.previewConcurrency)
       : lowResourceMode
-        ? 1
-        : 2,
+        ? 2
+        : 4,
     scanIntervalSeconds: config.scanIntervalSeconds || 60,
     fastScan: Boolean(config.fastScan),
     scanBatchSize: Number.isFinite(config.scanBatchSize)
