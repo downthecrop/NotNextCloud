@@ -1,4 +1,5 @@
 import { onMounted, onUnmounted, ref } from 'vue';
+import { useUploadQueueStore } from './useUploadQueueStore';
 
 export function useFileUploads({
   apiJson,
@@ -10,6 +11,17 @@ export function useFileUploads({
   getUploadOverwrite,
   onUploadComplete,
 }) {
+  const {
+    uploadQueueOpen,
+    uploadQueueEntries,
+    activeUploadCount,
+    finishedUploadCount,
+    createUploadEntry,
+    updateUploadEntry,
+    clearFinishedUploads,
+    setUploadQueueOpen,
+    toggleUploadQueue,
+  } = useUploadQueueStore();
   const fileInput = ref(null);
   const dragActive = ref(false);
   const dragDepth = ref(0);
@@ -37,6 +49,7 @@ export function useFileUploads({
     if (!canUploadNow()) {
       return;
     }
+    setUploadQueueOpen(true);
     fileInput.value?.click();
   }
 
@@ -100,6 +113,7 @@ export function useFileUploads({
     if (!targetRootId) {
       return;
     }
+    setUploadQueueOpen(true);
     uploading.value = true;
     uploadMessage.value = 'Uploading...';
     uploadErrors.value = [];
@@ -110,9 +124,20 @@ export function useFileUploads({
     try {
       for (const file of files) {
         const name = file.webkitRelativePath || file.name;
+        const queueId = createUploadEntry({
+          name,
+          rootId: targetRootId,
+          folderPath: currentPath(),
+          size: file.size || 0,
+        });
         if (!name) {
           skipped += 1;
           errors.push({ file: '(unknown)', error: 'Missing filename' });
+          updateUploadEntry(queueId, {
+            status: 'error',
+            error: 'Missing filename',
+            message: 'Failed',
+          });
           continue;
         }
 
@@ -138,6 +163,12 @@ export function useFileUploads({
         try {
           uploadProgress.value = { file: name, percent: 0 };
           uploadMessage.value = `Preparing ${name}...`;
+          updateUploadEntry(queueId, {
+            status: 'preparing',
+            percent: 0,
+            message: 'Preparing',
+            error: '',
+          });
           let overwriteFlag = uploadOverwrite();
           let status = await getStatus(overwriteFlag);
           if (status?.status === 'exists' && !overwriteFlag) {
@@ -145,6 +176,11 @@ export function useFileUploads({
             if (!confirmOverwrite) {
               skipped += 1;
               errors.push({ file: name, error: 'File already exists' });
+              updateUploadEntry(queueId, {
+                status: 'skipped',
+                message: 'Skipped',
+                error: 'File already exists',
+              });
               continue;
             }
             overwriteFlag = true;
@@ -153,6 +189,11 @@ export function useFileUploads({
           if (status?.status === 'complete') {
             stored += 1;
             uploadProgress.value = { file: name, percent: 100 };
+            updateUploadEntry(queueId, {
+              status: 'complete',
+              percent: 100,
+              message: 'Completed',
+            });
             continue;
           }
 
@@ -162,6 +203,11 @@ export function useFileUploads({
           }
           if (offset > 0) {
             uploadMessage.value = `Resuming ${name}...`;
+            updateUploadEntry(queueId, {
+              status: 'uploading',
+              percent: Math.floor((offset / file.size) * 100) || 0,
+              message: 'Resuming',
+            });
           }
 
           while (offset < file.size) {
@@ -170,6 +216,12 @@ export function useFileUploads({
             const percent = file.size ? Math.floor((offset / file.size) * 100) : 100;
             uploadProgress.value = { file: name, percent };
             uploadMessage.value = `Uploading ${name} (${percent}%)`;
+            updateUploadEntry(queueId, {
+              status: 'uploading',
+              percent,
+              message: `Uploading ${percent}%`,
+              error: '',
+            });
             const response = await apiJson(
               apiUrls.uploadChunk({
                 root: targetRootId,
@@ -204,9 +256,19 @@ export function useFileUploads({
 
           uploadProgress.value = { file: name, percent: 100 };
           stored += 1;
+          updateUploadEntry(queueId, {
+            status: 'complete',
+            percent: 100,
+            message: 'Completed',
+          });
         } catch (error) {
           skipped += 1;
           errors.push({ file: name, error: error?.message || 'Upload failed' });
+          updateUploadEntry(queueId, {
+            status: 'error',
+            error: error?.message || 'Upload failed',
+            message: 'Failed',
+          });
         }
       }
 
@@ -253,6 +315,12 @@ export function useFileUploads({
     uploadMessage,
     uploadErrors,
     uploadProgress,
+    uploadQueueOpen,
+    uploadQueueEntries,
+    activeUploadCount,
+    finishedUploadCount,
+    clearFinishedUploads,
+    toggleUploadQueue,
     openFilePicker,
     handleFileSelect,
     handleDragOver,

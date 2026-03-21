@@ -1,11 +1,13 @@
 <script setup>
-import { ref, computed, provide, onMounted, onUnmounted, watch } from 'vue';
+import { ref, computed, provide, onMounted, onUnmounted, watch, nextTick } from 'vue';
 import LoginView from './components/LoginView.vue';
 import SettingsModal from './components/SettingsModal.vue';
+import UploadQueuePanel from './components/UploadQueuePanel.vue';
 import FilesView from './views/FilesView.vue';
 import PhotosView from './views/PhotosView.vue';
 import MusicView from './views/MusicView.vue';
 import { createApiClient } from './api/client';
+import { useUploadQueueStore } from './composables/useUploadQueueStore';
 import { formatDate } from './utils/formatting';
 import { parseHash, buildHash } from './utils/hashNav';
 import { readBoolean, readPositiveInt, writeBoolean } from './utils/storage';
@@ -23,10 +25,20 @@ const musicJump = ref({ rootId: null, path: '', token: 0 });
 const photosJump = ref({ rootId: null, path: '', token: 0 });
 const musicDocumentTitle = ref('Music · Local Cloud');
 const settingsOpen = ref(false);
+const shortcutPrefix = ref('');
 let statusTimer = null;
+let shortcutTimer = null;
 const pageSize = ref(readPositiveInt('localCloudPageSize', 50));
 const apiInfo = ref(null);
 const uploadOverwrite = ref(readBoolean('localCloudUploadOverwrite', false));
+const {
+  uploadQueueOpen,
+  uploadQueueEntries,
+  activeUploadCount,
+  finishedUploadCount,
+  clearFinishedUploads,
+  toggleUploadQueue,
+} = useUploadQueueStore();
 const status = ref({
   lastScanAt: null,
   scanInProgress: false,
@@ -247,6 +259,102 @@ function setHash(view, music) {
 function setView(view) {
   currentView.value = view;
   setHash(view, musicNav.value);
+}
+
+function clearShortcutPrefix() {
+  shortcutPrefix.value = '';
+  if (shortcutTimer) {
+    clearTimeout(shortcutTimer);
+    shortcutTimer = null;
+  }
+}
+
+function setShortcutPrefix(value) {
+  shortcutPrefix.value = value;
+  if (shortcutTimer) {
+    clearTimeout(shortcutTimer);
+  }
+  shortcutTimer = setTimeout(() => {
+    shortcutPrefix.value = '';
+    shortcutTimer = null;
+  }, 1200);
+}
+
+function isEditableTarget(target) {
+  if (!target || typeof target.closest !== 'function') {
+    return false;
+  }
+  return Boolean(target.closest('input, textarea, select, [contenteditable="true"]'));
+}
+
+function focusPrimarySearch() {
+  nextTick(() => {
+    const search = document.querySelector('.search:not([disabled])');
+    if (search instanceof HTMLInputElement) {
+      search.focus();
+      search.select();
+    }
+  });
+}
+
+function handleGlobalShortcut(event) {
+  const key = String(event.key || '').toLowerCase();
+  if (!key) {
+    return;
+  }
+  const editable = isEditableTarget(event.target);
+
+  if (key === 'escape') {
+    clearShortcutPrefix();
+    if (settingsOpen.value) {
+      event.preventDefault();
+      settingsOpen.value = false;
+      return;
+    }
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+    return;
+  }
+
+  if (!editable && !event.metaKey && !event.ctrlKey && !event.altKey && key === '/') {
+    event.preventDefault();
+    clearShortcutPrefix();
+    focusPrimarySearch();
+    return;
+  }
+
+  if (editable || event.metaKey || event.ctrlKey || event.altKey) {
+    return;
+  }
+
+  if (key === 'u' && uploadQueueEntries.value.length) {
+    event.preventDefault();
+    clearShortcutPrefix();
+    toggleUploadQueue();
+    return;
+  }
+
+  if (shortcutPrefix.value === 'g' && ['f', 'p', 'm'].includes(key)) {
+    event.preventDefault();
+    clearShortcutPrefix();
+    if (key === 'f') {
+      setView('files');
+    } else if (key === 'p') {
+      setView('photos');
+    } else {
+      setView('music');
+    }
+    return;
+  }
+
+  if (key === 'g') {
+    event.preventDefault();
+    setShortcutPrefix('g');
+    return;
+  }
+
+  clearShortcutPrefix();
 }
 
 function goFilesRoot() {
@@ -480,9 +588,10 @@ onMounted(() => {
         loadRoots();
       }
       authReady.value = true;
-    });
+  });
   applyHash();
   window.addEventListener('hashchange', applyHash);
+  window.addEventListener('keydown', handleGlobalShortcut);
 });
 
 onUnmounted(() => {
@@ -494,7 +603,12 @@ onUnmounted(() => {
     clearTimeout(scanToastTimer);
     scanToastTimer = null;
   }
+  if (shortcutTimer) {
+    clearTimeout(shortcutTimer);
+    shortcutTimer = null;
+  }
   window.removeEventListener('hashchange', applyHash);
+  window.removeEventListener('keydown', handleGlobalShortcut);
 });
 
 watch(
@@ -637,5 +751,15 @@ watch(
         </button>
       </div>
     </div>
+
+    <UploadQueuePanel
+      v-if="uploadQueueEntries.length || activeUploadCount"
+      :open="uploadQueueOpen"
+      :items="uploadQueueEntries"
+      :active-count="activeUploadCount"
+      :finished-count="finishedUploadCount"
+      @toggle="toggleUploadQueue"
+      @clear-finished="clearFinishedUploads"
+    />
   </div>
 </template>

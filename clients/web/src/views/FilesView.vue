@@ -292,9 +292,6 @@ const {
   fileInput,
   dragActive,
   uploading,
-  uploadMessage,
-  uploadErrors,
-  uploadProgress,
   openFilePicker,
   handleFileSelect,
   handleDragOver,
@@ -1105,21 +1102,8 @@ onMounted(() => {
       </ViewToolbar>
 
       <ViewScrollArea ref="browserScroll">
-        <div
-          v-if="uploadMessage || !uploadEnabled"
-          class="upload-status"
-          :class="{ busy: uploading }"
-        >
-          <span v-if="!uploadEnabled">Uploads are disabled on this server.</span>
-          <span v-if="uploadMessage">{{ uploadMessage }}</span>
-          <span v-if="uploading && uploadProgress.file">
-            {{ uploadProgress.file }} ({{ uploadProgress.percent }}%)
-          </span>
-          <div v-if="uploadErrors.length" class="upload-errors">
-            <div v-for="(err, index) in uploadErrors" :key="`${err.file}-${index}`">
-              {{ err.file }}: {{ err.error }}
-            </div>
-          </div>
+        <div v-if="!uploadEnabled" class="upload-status">
+          <span>Uploads are disabled on this server.</span>
         </div>
 
         <div v-if="dragActive" class="drop-overlay">

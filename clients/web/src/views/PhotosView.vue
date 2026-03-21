@@ -106,6 +106,7 @@ let pendingWheelDelta = 0;
 let topRestoreInFlight = false;
 const startDate = ref('');
 const endDate = ref('');
+const photoBrowseMode = ref('timeline');
 const {
   menu: contextMenu,
   openMenu: openContextMenuBase,
@@ -157,6 +158,7 @@ const selectedAlbum = computed(
 );
 const activeCollection = computed(() => selectedAlbum.value || selectedPinnedAlbum.value);
 const isAlbumDetail = computed(() => Boolean(activeCollection.value));
+const isFolderBrowseMode = computed(() => !activeCollection.value && photoBrowseMode.value === 'folders');
 const albumItems = computed(() => {
   if (selectedAlbum.value) {
     return selectedAlbum.value.items || [];
@@ -223,6 +225,9 @@ const {
 const selectionCount = computed(() => selectedItemKeys.value.length);
 
 function dateBounds() {
+  if (!startDate.value || !endDate.value) {
+    return { startMs: null, endMs: null };
+  }
   let startMs = null;
   let endMs = null;
   if (startDate.value) {
@@ -235,8 +240,31 @@ function dateBounds() {
     end.setHours(23, 59, 59, 999);
     endMs = end.getTime();
   }
+  if (startMs && endMs && startMs > endMs) {
+    const nextStart = new Date(endMs);
+    nextStart.setHours(0, 0, 0, 0);
+    const nextEnd = new Date(startMs);
+    nextEnd.setHours(23, 59, 59, 999);
+    startMs = nextStart.getTime();
+    endMs = nextEnd.getTime();
+  }
   return { startMs, endMs };
 }
+
+function normalizeDateOrder() {
+  if (!startDate.value || !endDate.value || startDate.value <= endDate.value) {
+    return;
+  }
+  const nextStart = endDate.value;
+  endDate.value = startDate.value;
+  startDate.value = nextStart;
+}
+
+function clearDateRange() {
+  startDate.value = '';
+  endDate.value = '';
+}
+
 
 function filterByDate(list) {
   const { startMs, endMs } = dateBounds();
@@ -257,6 +285,41 @@ function filterByDate(list) {
 
 const filteredItems = computed(() => filterByDate(displayItems.value));
 const filteredAlbumItems = computed(() => filterByDate(albumItems.value));
+const photoFolders = computed(() => {
+  const folders = new Map();
+  for (const item of filteredItems.value) {
+    const folderPath = parentPath(item?.path || '');
+    const folderRootId = itemRootId(item);
+    const key = `${folderRootId}:${folderPath}`;
+    const existing = folders.get(key);
+    if (existing) {
+      existing.count += 1;
+      if ((Number(item?.mtime) || 0) > existing.latest) {
+        existing.latest = Number(item?.mtime) || 0;
+        existing.cover = item;
+      }
+      continue;
+    }
+    folders.set(key, {
+      id: key,
+      key,
+      path: folderPath,
+      rootId: folderRootId,
+      label:
+        props.currentRoot?.id === ALL_ROOTS_ID
+          ? `${rootName(folderRootId)} / ${pathLabel(folderPath, 'Root')}`
+          : pathLabel(folderPath, 'Root'),
+      shortLabel: pathLabel(folderPath, 'Root'),
+      rootLabel: rootName(folderRootId),
+      count: 1,
+      latest: Number(item?.mtime) || 0,
+      cover: item,
+    });
+  }
+  return Array.from(folders.values()).sort(
+    (a, b) => b.latest - a.latest || compareText(a.label, b.label)
+  );
+});
 
 const sortedItems = computed(() =>
   sortPhotos(filteredItems.value)
@@ -305,6 +368,10 @@ const timelineGroups = computed(() => {
 
 function itemRootId(item) {
   return item?.rootId || rootId.value;
+}
+
+function rootName(targetRootId) {
+  return props.roots.find((root) => root.id === targetRootId)?.name || 'Root';
 }
 
 function tileClass(item) {
@@ -477,6 +544,23 @@ async function clearDetailSelection() {
     return;
   }
   await handlePinClear();
+}
+
+async function openFolderCollection(folder) {
+  if (!folder?.rootId) {
+    return;
+  }
+  selectedAlbumId.value = null;
+  selectedPinnedAlbum.value = {
+    id: folder.id,
+    name: folder.label,
+    path: folder.path,
+    rootId: folder.rootId,
+    isPinned: false,
+  };
+  searchQuery.value = '';
+  clearPin();
+  await loadPhotos({ reset: true });
 }
 
 function openContextMenu(event, item) {
@@ -1073,8 +1157,19 @@ watch(
   { immediate: true }
 );
 
+watch([startDate, endDate], () => {
+  normalizeDateOrder();
+});
+
 watch([searchQuery, startDate, endDate, selectedAlbumId], () => {
   clearSelection();
+});
+
+watch(activeCollection, (value) => {
+  if (value) {
+    return;
+  }
+  photoBrowseMode.value = 'timeline';
 });
 
 onMounted(() => {
@@ -1194,10 +1289,41 @@ watch(
             placeholder="Search photos and videos"
             v-model="searchQuery"
           />
-          <div class="date-filter">
-            <input type="date" v-model="startDate" aria-label="Start date" />
-            <span>–</span>
-            <input type="date" v-model="endDate" aria-label="End date" />
+          <div v-if="!activeCollection" class="view-toggle">
+            <button :class="{ active: photoBrowseMode === 'timeline' }" @click="photoBrowseMode = 'timeline'">
+              Timeline
+            </button>
+            <button :class="{ active: photoBrowseMode === 'folders' }" @click="photoBrowseMode = 'folders'">
+              Folders
+            </button>
+          </div>
+          <div class="date-filter compact-pill">
+            <label
+              class="date-filter-btn"
+              :class="{ active: Boolean(startDate) }"
+              :title="startDate ? `Start date: ${startDate}` : 'Set start date'"
+            >
+              <input type="date" v-model="startDate" aria-label="Start date" />
+              <i class="fa-regular fa-calendar"></i>
+            </label>
+            <label
+              class="date-filter-btn"
+              :class="{ active: Boolean(endDate) }"
+              :title="endDate ? `End date: ${endDate}` : 'Set end date'"
+            >
+              <input type="date" v-model="endDate" aria-label="End date" />
+              <i class="fa-solid fa-calendar-check"></i>
+            </label>
+            <button
+              v-if="startDate || endDate"
+              type="button"
+              class="date-filter-btn clear"
+              title="Clear date range"
+              aria-label="Clear date range"
+              @click="clearDateRange"
+            >
+              <i class="fa-solid fa-xmark"></i>
+            </button>
           </div>
           <button class="action-btn secondary" @click="setSort('date')">
             <i class="fa-solid fa-arrow-down-wide-short"></i>
@@ -1220,6 +1346,39 @@ watch(
           Add photos or videos to your storage root to see the timeline.
         </div>
 
+        <div v-else-if="isFolderBrowseMode" class="photo-folder-browser">
+          <button
+            v-for="folder in photoFolders"
+            :key="folder.key"
+            class="photo-folder-card"
+            @click="openFolderCollection(folder)"
+          >
+            <div class="photo-folder-cover">
+              <img
+                v-if="folder.cover && !hasImageError(folder.cover, 'folder')"
+                :src="previewUrl(folder.rootId, folder.cover.path, { previewKey: folder.cover.previewKey, mtime: folder.cover.mtime, mime: folder.cover.mime })"
+                :alt="folder.shortLabel"
+                loading="lazy"
+                @error="markImageError(folder.cover, 'folder')"
+              />
+              <div
+                v-else
+                class="tile-fallback media-fallback compact"
+              >
+                <i class="fa-solid fa-folder-open"></i>
+                <span>{{ folder.count }} items</span>
+              </div>
+            </div>
+            <div class="photo-folder-card-copy">
+              <strong>{{ folder.shortLabel }}</strong>
+              <div class="meta" v-if="currentRoot?.id === ALL_ROOTS_ID">{{ folder.rootLabel }}</div>
+              <div class="meta">{{ folder.count }} items</div>
+            </div>
+          </button>
+          <div v-if="!photoFolders.length" class="empty-state">
+            No folders found for the current filters.
+          </div>
+        </div>
         <div v-else-if="!activeCollection" class="timeline">
           <div v-if="canRestoreFromTop" ref="topSentinel" class="scroll-sentinel"></div>
           <div v-for="group in timelineGroups" :key="group.label" class="timeline-group">
