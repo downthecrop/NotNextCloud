@@ -13,7 +13,12 @@ import { useSort } from '../composables/useSort';
 import { useTrashApi } from '../composables/useTrashApi';
 import { useDebouncedWatch } from '../composables/useDebouncedWatch';
 import { useFileUploads } from '../composables/useFileUploads';
+import AppSidebar from '../components/AppSidebar.vue';
 import MiniPlayer from '../components/MiniPlayer.vue';
+import SidebarNavItem from '../components/SidebarNavItem.vue';
+import SidebarSection from '../components/SidebarSection.vue';
+import ViewScrollArea from '../components/ViewScrollArea.vue';
+import ViewToolbar from '../components/ViewToolbar.vue';
 import { formatDate, formatSize } from '../utils/formatting';
 import { itemKey as buildItemKey } from '../utils/itemKey';
 import { isAudio, isImage, isMedia, isVideo } from '../utils/media';
@@ -96,6 +101,7 @@ const isTrashView = ref(false);
 const trashItems = ref([]);
 const trashTotal = ref(0);
 const trashOffset = ref(0);
+const browserScroll = ref(null);
 const needsFilesRefresh = ref(false);
 const requestVersion = ref(0);
 let searchAbortController = null;
@@ -115,6 +121,7 @@ useGlobalMenuClose([closeBreadcrumbMenu, closeItemMenu]);
 
 const rootId = computed(() => props.currentRoot?.id || '');
 const isAllRoot = computed(() => props.currentRoot?.id === ALL_ROOTS_ID);
+const browserScrollRoot = computed(() => browserScroll.value?.scrollEl || null);
 const canUpload = computed(
   () => Boolean(props.uploadEnabled && props.currentRoot && !isAllRoot.value)
 );
@@ -245,9 +252,6 @@ const {
   getItemKey: (item) => item?.path || '',
   onSelect: (item) => setSingleSelection(item),
 });
-const selectedAudioTrack = computed(() =>
-  activeItem.value && isAudio(activeItem.value) ? activeItem.value : null
-);
 const modalAudioTrack = computed(() =>
   modalItem.value && isAudio(modalItem.value) ? modalItem.value : null
 );
@@ -267,19 +271,6 @@ const breadcrumbs = computed(() => {
     crumbs.push({ name: part, path: acc });
   }
   return crumbs;
-});
-
-const activeItem = computed(() => {
-  if (!selectedPaths.value.length) {
-    return null;
-  }
-  const needle = selectedPaths.value[selectedPaths.value.length - 1];
-  return (
-    displayItems.value.find((item) => itemKey(item) === needle) ||
-    items.value.find((item) => itemKey(item) === needle) ||
-    searchResults.value.find((item) => itemKey(item) === needle) ||
-    null
-  );
 });
 
 const {
@@ -772,6 +763,7 @@ async function loadMore() {
 
 const { sentinel } = useInfiniteScroll(loadMore, {
   canLoadMore: () => !loading.value && hasMore.value,
+  rootRef: browserScrollRoot,
 });
 
 useDebouncedWatch(searchQuery, () => {
@@ -880,27 +872,29 @@ watch(
 </script>
 
 <template>
-  <section class="layout" :class="{ 'sidebar-open': sidebarOpen }">
-    <aside class="sidebar">
-      <h3>Storage Roots</h3>
-      <button
-        v-for="root in roots"
-        :key="root.id"
-        class="root-btn"
-        :class="{ active: currentRoot?.id === root.id }"
-        @click="handleRootSelect(root)"
-      >
-        {{ root.name }}
-      </button>
-      <button
-        class="root-btn trash-btn"
-        :class="{ active: isTrashView }"
-        @click="openTrash"
-      >
-        <i class="fa-solid fa-trash"></i>
-        Recycle Bin
-      </button>
-    </aside>
+  <section class="layout layout-wide" :class="{ 'sidebar-open': sidebarOpen }">
+    <AppSidebar title="Files">
+      <SidebarSection title="Volumes">
+        <SidebarNavItem
+          v-for="root in roots"
+          :key="root.id"
+          icon="fa-solid fa-hard-drive"
+          :active="currentRoot?.id === root.id"
+          @click="handleRootSelect(root)"
+        >
+          {{ root.name }}
+        </SidebarNavItem>
+      </SidebarSection>
+      <SidebarSection title="Library">
+        <SidebarNavItem
+          icon="fa-solid fa-trash"
+          :active="isTrashView"
+          @click="openTrash"
+        >
+          Recycle Bin
+        </SidebarNavItem>
+      </SidebarSection>
+    </AppSidebar>
     <div class="sidebar-scrim" @click="closeSidebar"></div>
 
     <main
@@ -911,8 +905,8 @@ watch(
       @dragleave="handleDragLeave"
       @drop="handleDrop"
     >
-      <div class="toolbar">
-        <div class="toolbar-title">
+      <ViewToolbar>
+        <template #title>
           <nav class="breadcrumbs" v-if="breadcrumbs.length">
             <button
               v-for="(crumb, index) in breadcrumbs"
@@ -925,8 +919,8 @@ watch(
             </button>
           </nav>
           <span class="meta" v-if="isSearchMode">Search - {{ searchResults.length }} results</span>
-        </div>
-        <div class="toolbar-actions">
+        </template>
+        <template #actions>
           <button class="icon-btn sidebar-toggle" @click="toggleSidebar" aria-label="Toggle sidebar">
             <i class="fa-solid fa-bars"></i>
           </button>
@@ -1002,92 +996,93 @@ watch(
               Grid
             </button>
           </div>
-        </div>
-      </div>
+        </template>
+      </ViewToolbar>
 
-      <div
-        v-if="uploadMessage || !uploadEnabled"
-        class="upload-status"
-        :class="{ busy: uploading }"
-      >
-        <span v-if="!uploadEnabled">Uploads are disabled on this server.</span>
-        <span v-if="uploadMessage">{{ uploadMessage }}</span>
-        <span v-if="uploading && uploadProgress.file">
-          {{ uploadProgress.file }} ({{ uploadProgress.percent }}%)
-        </span>
-        <div v-if="uploadErrors.length" class="upload-errors">
-          <div v-for="(err, index) in uploadErrors" :key="`${err.file}-${index}`">
-            {{ err.file }}: {{ err.error }}
+      <ViewScrollArea ref="browserScroll">
+        <div
+          v-if="uploadMessage || !uploadEnabled"
+          class="upload-status"
+          :class="{ busy: uploading }"
+        >
+          <span v-if="!uploadEnabled">Uploads are disabled on this server.</span>
+          <span v-if="uploadMessage">{{ uploadMessage }}</span>
+          <span v-if="uploading && uploadProgress.file">
+            {{ uploadProgress.file }} ({{ uploadProgress.percent }}%)
+          </span>
+          <div v-if="uploadErrors.length" class="upload-errors">
+            <div v-for="(err, index) in uploadErrors" :key="`${err.file}-${index}`">
+              {{ err.file }}: {{ err.error }}
+            </div>
           </div>
         </div>
-      </div>
 
-      <div v-if="dragActive" class="drop-overlay">
-        <div>
-          <i class="fa-solid fa-cloud-arrow-up"></i>
-          Drop files to upload
+        <div v-if="dragActive" class="drop-overlay">
+          <div>
+            <i class="fa-solid fa-cloud-arrow-up"></i>
+            Drop files to upload
+          </div>
         </div>
-      </div>
 
-      <div v-if="loading && !displayItems.length" class="empty-state">Loading files...</div>
-      <div v-else-if="error" class="empty-state">{{ error }}</div>
-      <div v-else-if="!displayItems.length" class="empty-state">
-        <span v-if="isTrashView">Recycle Bin is empty.</span>
-        <span v-else-if="isAllRoot">Select a root to upload or browse deeper.</span>
-        <span v-else>Drop files into the root folder to populate this view.</span>
-      </div>
-
-      <div v-else-if="viewMode === 'list'">
-        <div class="list-header">
-          <button
-            class="list-sort"
-            type="button"
-            :class="{ active: sortKey === 'name' }"
-            :aria-sort="sortKey === 'name' ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'"
-            @click="setSort('name')"
-          >
-            Name
-            <span v-if="sortKey === 'name'" class="sort-indicator">{{ sortDir === 'asc' ? 'ASC' : 'DESC' }}</span>
-          </button>
-          <button
-            class="list-sort"
-            type="button"
-            :class="{ active: sortKey === 'size' }"
-            :aria-sort="sortKey === 'size' ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'"
-            @click="setSort('size')"
-          >
-            Size
-            <span v-if="sortKey === 'size'" class="sort-indicator">{{ sortDir === 'asc' ? 'ASC' : 'DESC' }}</span>
-          </button>
-          <button
-            class="list-sort"
-            type="button"
-            :class="{ active: sortKey === 'mtime' }"
-            :aria-sort="sortKey === 'mtime' ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'"
-            @click="setSort('mtime')"
-          >
-            {{ isTrashView ? 'Deleted' : 'Modified' }}
-            <span v-if="sortKey === 'mtime'" class="sort-indicator">{{ sortDir === 'asc' ? 'ASC' : 'DESC' }}</span>
-          </button>
-          <button
-            class="list-sort"
-            type="button"
-            :class="{ active: sortKey === 'type' }"
-            :aria-sort="sortKey === 'type' ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'"
-            @click="setSort('type')"
-          >
-            Type
-            <span v-if="sortKey === 'type'" class="sort-indicator">{{ sortDir === 'asc' ? 'ASC' : 'DESC' }}</span>
-          </button>
+        <div v-if="loading && !displayItems.length" class="empty-state">Loading files...</div>
+        <div v-else-if="error" class="empty-state">{{ error }}</div>
+        <div v-else-if="!displayItems.length" class="empty-state">
+          <span v-if="isTrashView">Recycle Bin is empty.</span>
+          <span v-else-if="isAllRoot">Select a root to upload or browse deeper.</span>
+          <span v-else>Drop files into the root folder to populate this view.</span>
         </div>
-        <div
-          v-for="(item, index) in displayItems"
-          :key="itemKey(item)"
-          class="list-row"
-          :class="{ selected: isSelected(item) }"
-          @click="handleItemClick(item, $event)"
-          @contextmenu.prevent="openItemMenu($event, item)"
-          :style="rowAnimationStyle(index)"
+
+        <div v-else-if="viewMode === 'list'">
+          <div class="list-header">
+            <button
+              class="list-sort"
+              type="button"
+              :class="{ active: sortKey === 'name' }"
+              :aria-sort="sortKey === 'name' ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'"
+              @click="setSort('name')"
+            >
+              Name
+              <span v-if="sortKey === 'name'" class="sort-indicator">{{ sortDir === 'asc' ? 'ASC' : 'DESC' }}</span>
+            </button>
+            <button
+              class="list-sort"
+              type="button"
+              :class="{ active: sortKey === 'size' }"
+              :aria-sort="sortKey === 'size' ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'"
+              @click="setSort('size')"
+            >
+              Size
+              <span v-if="sortKey === 'size'" class="sort-indicator">{{ sortDir === 'asc' ? 'ASC' : 'DESC' }}</span>
+            </button>
+            <button
+              class="list-sort"
+              type="button"
+              :class="{ active: sortKey === 'mtime' }"
+              :aria-sort="sortKey === 'mtime' ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'"
+              @click="setSort('mtime')"
+            >
+              {{ isTrashView ? 'Deleted' : 'Modified' }}
+              <span v-if="sortKey === 'mtime'" class="sort-indicator">{{ sortDir === 'asc' ? 'ASC' : 'DESC' }}</span>
+            </button>
+            <button
+              class="list-sort"
+              type="button"
+              :class="{ active: sortKey === 'type' }"
+              :aria-sort="sortKey === 'type' ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'"
+              @click="setSort('type')"
+            >
+              Type
+              <span v-if="sortKey === 'type'" class="sort-indicator">{{ sortDir === 'asc' ? 'ASC' : 'DESC' }}</span>
+            </button>
+          </div>
+          <div
+            v-for="(item, index) in displayItems"
+            :key="itemKey(item)"
+            class="list-row"
+            :class="{ selected: isSelected(item) }"
+            @click="handleItemClick(item, $event)"
+            @contextmenu.prevent="openItemMenu($event, item)"
+            :style="rowAnimationStyle(index)"
           >
             <div class="name-cell">
               <img
@@ -1111,20 +1106,20 @@ watch(
                 </div>
               </div>
             </div>
-          <div>{{ item.isDir ? '--' : formatSize(item.size) }}</div>
-          <div>{{ formatDate(isTrashView ? item.deletedAt : item.mtime) }}</div>
-          <div>{{ item.isDir ? 'Folder' : item.ext?.replace('.', '') || 'File' }}</div>
+            <div>{{ item.isDir ? '--' : formatSize(item.size) }}</div>
+            <div>{{ formatDate(isTrashView ? item.deletedAt : item.mtime) }}</div>
+            <div>{{ item.isDir ? 'Folder' : item.ext?.replace('.', '') || 'File' }}</div>
+          </div>
         </div>
-      </div>
 
-      <div v-else class="grid">
-        <div
-          v-for="item in displayItems"
-          :key="itemKey(item)"
-          class="grid-card"
-          :class="{ selected: isSelected(item) }"
-          @click="handleItemClick(item, $event)"
-          @contextmenu.prevent="openItemMenu($event, item)"
+        <div v-else class="grid">
+          <div
+            v-for="item in displayItems"
+            :key="itemKey(item)"
+            class="grid-card"
+            :class="{ selected: isSelected(item) }"
+            @click="handleItemClick(item, $event)"
+            @contextmenu.prevent="openItemMenu($event, item)"
           >
             <div class="grid-thumb">
               <img
@@ -1152,74 +1147,17 @@ watch(
             <div v-if="isSearchMode || isTrashView" class="item-path">
               <span v-if="isTrashView">{{ item.rootName }} / </span>{{ item.path }}
             </div>
-          <div class="meta">{{ item.isDir ? 'Folder' : formatSize(item.size) }}</div>
-        </div>
-      </div>
-
-      <div v-if="hasMore" class="empty-state">
-        <button class="action-btn secondary" @click="loadMore">Load more</button>
-      </div>
-      <div ref="sentinel" class="scroll-sentinel"></div>
-    </main>
-
-    <aside class="preview">
-      <h3>Preview</h3>
-      <div v-if="activeItem" class="preview-media">
-        <img
-          v-if="isTrashView && isImage(activeItem)"
-          :src="trashFileUrl(activeItem.trashId)"
-          :alt="activeItem.name"
-        />
-        <video
-          v-else-if="isTrashView && isVideo(activeItem)"
-          :src="trashFileUrl(activeItem.trashId)"
-          controls
-        />
-        <audio
-          v-else-if="isTrashView && isAudio(activeItem)"
-          :src="trashFileUrl(activeItem.trashId)"
-          controls
-        />
-        <div v-else-if="isTrashView" class="icon">
-          <i class="fa-solid fa-trash"></i>
-          <div class="media-fallback-meta">In Recycle Bin</div>
-        </div>
-        <img
-          v-else-if="isImage(activeItem) && !hasImageError(activeItem, 'panel')"
-          :src="previewUrl(itemRootId(activeItem), activeItem.path, { previewKey: activeItem.previewKey, mtime: activeItem.mtime, mime: activeItem.mime })"
-          :alt="activeItem.name"
-          @error="markImageError(activeItem, 'panel')"
-        />
-        <div v-else-if="isImage(activeItem)" class="media-fallback">
-          <i class="fa-solid fa-file-circle-xmark"></i>
-          <div>Preview unavailable</div>
-          <div class="media-fallback-meta">
-            {{ activeItem.ext?.replace('.', '').toUpperCase() || 'FILE' }}
+            <div class="meta">{{ item.isDir ? 'Folder' : formatSize(item.size) }}</div>
           </div>
         </div>
-        <video
-          v-else-if="isVideo(activeItem)"
-          :src="fileUrl(itemRootId(activeItem), activeItem.path)"
-          controls
-        />
-        <div v-else class="icon"><i :class="iconClass(activeItem)"></i></div>
-      </div>
-      <div v-else class="preview-media">Select a file to preview</div>
-      <div v-if="activeItem" class="meta">
-        <div>{{ activeItem.name }}</div>
-        <div>{{ activeItem.path }}</div>
-        <div>{{ activeItem.isDir ? 'Folder' : formatSize(activeItem.size) }}</div>
-        <div v-if="isTrashView">Deleted: {{ formatDate(activeItem.deletedAt) }}</div>
-        <div v-else>{{ formatDate(activeItem.mtime) }}</div>
-      </div>
-      <a
-        v-if="activeItem && !activeItem.isDir && !isTrashView"
-        class="action-btn"
-        :href="downloadUrl(itemRootId(activeItem), activeItem.path)"
-      >
-        Download
-      </a>
-    </aside>
+
+        <div v-if="hasMore" class="empty-state">
+          <button class="action-btn secondary" @click="loadMore">Load more</button>
+        </div>
+        <div ref="sentinel" class="scroll-sentinel"></div>
+      </ViewScrollArea>
+    </main>
+
   </section>
 
   <div v-if="modalOpen && modalItem" class="modal-overlay photo-modal" @click.self="closeModal">

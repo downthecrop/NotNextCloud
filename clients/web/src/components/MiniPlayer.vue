@@ -344,33 +344,33 @@ onUnmounted(() => {
         <button class="icon-btn" @click="playNext" :disabled="!selectedTrack" aria-label="Next">
           <i class="fa-solid fa-forward-step"></i>
         </button>
-      </div>
-      <div
-        class="player-bar-volume"
-        :class="{ 'volume-active': volumeOpen }"
-        ref="volumeRef"
-        @mouseenter="openVolume"
-        @mouseleave="closeVolume"
-        @focusin="openVolume"
-        @focusout="handleVolumeFocusOut"
-        @pointerdown="openVolume"
-        @pointermove="keepVolumeOpen"
-      >
-        <button class="icon-btn" @click="toggleMute" :disabled="!selectedTrack" aria-label="Mute">
-          <i :class="muted || volume === 0 ? 'fa-solid fa-volume-xmark' : 'fa-solid fa-volume-high'"></i>
-        </button>
-        <div class="volume-popover">
-          <input
-            class="volume-slider"
-            type="range"
-            min="0"
-            max="1"
-            step="0.01"
-            :value="volume"
-            @input="handleVolumeInput"
-            :disabled="!selectedTrack"
-            aria-label="Volume"
-          />
+        <div
+          class="player-bar-volume"
+          :class="{ 'volume-active': volumeOpen }"
+          ref="volumeRef"
+          @mouseenter="openVolume"
+          @mouseleave="closeVolume"
+          @focusin="openVolume"
+          @focusout="handleVolumeFocusOut"
+          @pointerdown="openVolume"
+          @pointermove="keepVolumeOpen"
+        >
+          <button class="icon-btn" @click="toggleMute" :disabled="!selectedTrack" aria-label="Mute">
+            <i :class="muted || volume === 0 ? 'fa-solid fa-volume-xmark' : 'fa-solid fa-volume-high'"></i>
+          </button>
+          <div class="volume-popover">
+            <input
+              class="volume-slider"
+              type="range"
+              min="0"
+              max="1"
+              step="0.01"
+              :value="volume"
+              @input="handleVolumeInput"
+              :disabled="!selectedTrack"
+              aria-label="Volume"
+            />
+          </div>
         </div>
       </div>
     </div>

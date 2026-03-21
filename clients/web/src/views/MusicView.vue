@@ -11,7 +11,12 @@ import { useSidebar } from '../composables/useSidebar';
 import { useDebouncedWatch } from '../composables/useDebouncedWatch';
 import { useDraftCollection } from '../composables/useDraftCollection';
 import { usePinnedLocations } from '../composables/usePinnedLocations';
+import AppSidebar from '../components/AppSidebar.vue';
 import MiniPlayer from '../components/MiniPlayer.vue';
+import SidebarNavItem from '../components/SidebarNavItem.vue';
+import SidebarSection from '../components/SidebarSection.vue';
+import ViewScrollArea from '../components/ViewScrollArea.vue';
+import ViewToolbar from '../components/ViewToolbar.vue';
 import { formatDuration } from '../utils/formatting';
 import { itemKey as buildItemKey } from '../utils/itemKey';
 import { hasMoreFromTotalOrCursor, loadPaged, resetPagedState } from '../utils/pagination';
@@ -107,8 +112,8 @@ const {
 } = useMenu({ album: null });
 const albumTracks = ref([]);
 const artistTracks = ref([]);
-const musicBrowserRef = ref(null);
-const artistListScroll = ref({ windowY: 0, containerY: 0 });
+const musicScrollArea = ref(null);
+const artistListScroll = ref({ containerY: 0 });
 const artistAlbumCoverErrors = ref(new Set());
 const albumOpenedFromArtist = ref(false);
 const { sidebarOpen, toggleSidebar, closeSidebar } = useSidebar();
@@ -125,6 +130,7 @@ const {
 } = usePinnedLocations({ storageKey: 'localCloudMusicPins' });
 
 const rootId = computed(() => props.currentRoot?.id || '');
+const musicBrowserRef = computed(() => musicScrollArea.value?.scrollEl || null);
 const isSearchMode = computed(() => Boolean(searchQuery.value.trim()));
 const albumSearchQuery = computed(() =>
   mode.value === 'albums' && !selectedAlbum.value ? searchQuery.value.trim() : ''
@@ -551,6 +557,7 @@ async function loadMore() {
 
 const { sentinel } = useInfiniteScroll(loadMore, {
   canLoadMore: () => !loading.value && hasMore.value,
+  rootRef: musicBrowserRef,
 });
 
 function selectTrack(item) {
@@ -607,12 +614,9 @@ function clearAlbumSelection() {
 }
 
 async function selectArtist(artist) {
-  if (typeof window !== 'undefined') {
-    artistListScroll.value = {
-      windowY: window.scrollY || window.pageYOffset || 0,
-      containerY: musicBrowserRef.value?.scrollTop || 0,
-    };
-  }
+  artistListScroll.value = {
+    containerY: musicBrowserRef.value?.scrollTop || 0,
+  };
   clearTrackSelection();
   selectedArtist.value = artist;
   selectedAlbum.value = null;
@@ -631,9 +635,6 @@ async function clearArtistSelection({ restoreScroll = true } = {}) {
   await nextTick();
   if (musicBrowserRef.value) {
     musicBrowserRef.value.scrollTop = artistListScroll.value.containerY || 0;
-  }
-  if (typeof window !== 'undefined') {
-    window.scrollTo(0, artistListScroll.value.windowY || 0);
   }
 }
 
@@ -1065,74 +1066,63 @@ onMounted(() => {
 
 <template>
   <section class="layout layout-wide music-layout" :class="{ 'sidebar-open': sidebarOpen }">
-    <aside class="sidebar">
-      <h3>Music</h3>
-      <div class="sidebar-section">
-        <div class="sidebar-title">Library</div>
-        <button class="sidebar-item" :class="{ active: mode === 'songs' }" @click="handleSelectMode('songs')">
-          <span class="icon"><i class="fa-solid fa-music"></i></span>
+    <AppSidebar title="Music">
+      <SidebarSection title="Library">
+        <SidebarNavItem icon="fa-solid fa-music" :active="mode === 'songs'" @click="handleSelectMode('songs')">
           Songs
-        </button>
-        <button class="sidebar-item" :class="{ active: mode === 'albums' }" @click="handleSelectMode('albums')">
-          <span class="icon"><i class="fa-solid fa-compact-disc"></i></span>
+        </SidebarNavItem>
+        <SidebarNavItem icon="fa-solid fa-compact-disc" :active="mode === 'albums'" @click="handleSelectMode('albums')">
           Albums
-        </button>
-        <button class="sidebar-item" :class="{ active: mode === 'artists' }" @click="handleSelectMode('artists')">
-          <span class="icon"><i class="fa-solid fa-user"></i></span>
+        </SidebarNavItem>
+        <SidebarNavItem icon="fa-solid fa-user" :active="mode === 'artists'" @click="handleSelectMode('artists')">
           Artists
-        </button>
-      </div>
-      <div class="sidebar-section">
-        <div class="sidebar-title">Playlists</div>
-        <button
-          class="sidebar-item"
-          :class="{ active: mode === 'playlists' && !selectedPlaylistId }"
+        </SidebarNavItem>
+      </SidebarSection>
+      <SidebarSection title="Playlists">
+        <SidebarNavItem
+          icon="fa-solid fa-list"
+          :active="mode === 'playlists' && !selectedPlaylistId"
           @click="handleSelectMode('playlists')"
         >
-          <span class="icon"><i class="fa-solid fa-list"></i></span>
           Playlists
-        </button>
-        <button
+        </SidebarNavItem>
+        <SidebarNavItem
           v-for="playlist in playlists"
           :key="playlist.id"
-          class="sidebar-item"
-          :class="{ active: selectedPlaylistId === playlist.id }"
+          icon="fa-solid fa-list-music"
+          :active="selectedPlaylistId === playlist.id"
+          :count="playlist.tracks.length"
           @click="handleSelectPlaylist(playlist)"
         >
-          <span class="icon"><i class="fa-solid fa-list-music"></i></span>
-          <span class="sidebar-label">{{ playlist.name }}</span>
-          <span class="sidebar-count">{{ playlist.tracks.length }}</span>
-        </button>
+          {{ playlist.name }}
+        </SidebarNavItem>
         <div v-if="!playlists.length" class="sidebar-hint">Right-click a track to add.</div>
-      </div>
-      <div class="sidebar-section">
-        <div class="sidebar-title">Pinned</div>
-        <button
-          class="sidebar-item"
-          :class="{ active: !activePin }"
+      </SidebarSection>
+      <SidebarSection title="Pinned">
+        <SidebarNavItem
+          icon="fa-regular fa-bookmark"
+          :active="!activePin"
           @click="handlePinClear"
         >
-          <span class="icon"><i class="fa-regular fa-bookmark"></i></span>
           All locations
-        </button>
-        <button
+        </SidebarNavItem>
+        <SidebarNavItem
           v-for="pin in musicPins"
           :key="pin.id"
-          class="sidebar-item"
-          :class="{ active: activePin?.id === pin.id }"
+          icon="fa-solid fa-location-dot"
+          :active="activePin?.id === pin.id"
           @click="handlePinSelect(pin)"
         >
-          <span class="icon"><i class="fa-solid fa-location-dot"></i></span>
-          <span class="sidebar-label">{{ pin.label }}</span>
-        </button>
+          {{ pin.label }}
+        </SidebarNavItem>
         <div v-if="!musicPins.length" class="sidebar-hint">Right-click a track to pin.</div>
-      </div>
-    </aside>
+      </SidebarSection>
+    </AppSidebar>
     <div class="sidebar-scrim" @click="closeSidebar"></div>
 
-    <main ref="musicBrowserRef" class="browser music-browser">
-      <div class="toolbar">
-        <div class="toolbar-title">
+    <main class="browser music-browser">
+      <ViewToolbar>
+        <template #title>
           <div class="toolbar-line">
             <button class="icon-btn sidebar-toggle" @click="toggleSidebar" aria-label="Toggle sidebar">
               <i class="fa-solid fa-bars"></i>
@@ -1188,110 +1178,31 @@ onMounted(() => {
               - {{ filteredArtists.length }} of {{ artistsTotal }}
             </span>
           </div>
-        </div>
-        <div
-          class="toolbar-actions"
-          v-if="
-            mode === 'songs' ||
-            (mode === 'albums' && !selectedAlbum) ||
-            (mode === 'artists' && !isArtistDetail)
-          "
-        >
+        </template>
+        <template #actions>
           <input
+            v-if="
+              mode === 'songs' ||
+              (mode === 'albums' && !selectedAlbum) ||
+              (mode === 'artists' && !isArtistDetail)
+            "
             class="search"
             type="search"
             :placeholder="mode === 'songs' ? 'Search songs, albums, artists' : mode === 'albums' ? 'Filter albums' : 'Filter artists'"
             v-model="searchQuery"
           />
+        </template>
+      </ViewToolbar>
+
+      <ViewScrollArea ref="musicScrollArea" class="music-scroll-area">
+        <div v-if="loading && !displaySongs.length && mode === 'songs'" class="empty-state">Loading tracks...</div>
+        <div v-else-if="loading && mode !== 'songs'" class="empty-state">Loading library...</div>
+        <div v-else-if="error" class="empty-state">{{ error }}</div>
+        <div v-else-if="mode === 'songs' && !displaySongs.length" class="empty-state">
+          Add audio files to your storage root to build the library.
         </div>
-      </div>
 
-      <div v-if="loading && !displaySongs.length && mode === 'songs'" class="empty-state">Loading tracks...</div>
-      <div v-else-if="loading && mode !== 'songs'" class="empty-state">Loading library...</div>
-      <div v-else-if="error" class="empty-state">{{ error }}</div>
-      <div v-else-if="mode === 'songs' && !displaySongs.length" class="empty-state">
-        Add audio files to your storage root to build the library.
-      </div>
-
-      <div v-if="mode === 'songs' && displaySongs.length" class="music-list">
-        <div class="music-header">
-          <button class="music-sort" @click="setSort('title')">Song</button>
-          <button class="music-sort" @click="setSort('album')">Album</button>
-          <button class="music-sort" @click="setSort('artist')">Artist</button>
-          <button class="music-sort" @click="setSort('duration')">Duration</button>
-        </div>
-        <button
-          v-for="item in sortedSongs"
-          :key="itemKey(item)"
-          class="music-row"
-          :class="{ selected: isSelectedTrack(item) }"
-          @click="handleTrackClick(item, $event)"
-          @contextmenu.prevent="openContextMenu($event, item)"
-        >
-          <div class="music-title">{{ trackTitle(item) }}</div>
-          <div>{{ trackAlbum(item) }}</div>
-          <div>{{ trackArtist(item) }}</div>
-          <div>{{ formatDuration(item.duration) || '--' }}</div>
-        </button>
-      </div>
-
-      <div v-if="mode === 'albums' && !selectedAlbum" class="album-grid">
-        <button
-          v-for="album in filteredAlbums"
-          :key="album.albumKey"
-          class="album-card"
-          :class="{ selected: selectedAlbum?.albumKey === album.albumKey }"
-          @click="selectAlbum(album)"
-          @contextmenu.prevent="openAlbumMenu($event, album)"
-        >
-          <div class="album-art">
-            <img
-              v-if="album.coverKey"
-              :src="albumArtUrl(rootId, album.coverKey)"
-              :alt="album.album"
-            />
-            <div v-else class="tile-fallback"><i class="fa-solid fa-compact-disc"></i></div>
-          </div>
-          <strong>{{ album.album }}</strong>
-          <div class="meta">{{ album.artist }}</div>
-          <div class="meta">{{ album.tracks }} tracks</div>
-        </button>
-      </div>
-
-      <div v-if="mode === 'albums' && selectedAlbum" class="album-detail">
-        <div class="album-detail-header">
-          <div class="album-detail-art">
-            <img
-              v-if="selectedAlbum.coverKey"
-              :src="albumArtUrl(rootId, selectedAlbum.coverKey)"
-              :alt="selectedAlbum.album"
-            />
-            <div v-else class="tile-fallback"><i class="fa-solid fa-compact-disc"></i></div>
-          </div>
-          <div class="album-detail-info">
-            <div class="album-detail-title">{{ selectedAlbumTitle }}</div>
-            <div class="meta">{{ selectedAlbumArtist }}</div>
-            <div v-if="selectedAlbum.releaseDate" class="meta">
-              Released {{ selectedAlbum.releaseDate }}
-            </div>
-            <div class="meta">{{ albumTrackCount }} tracks</div>
-          </div>
-          <div class="album-detail-actions">
-            <button class="action-btn secondary" @click="addAlbumToPlaylist">
-              <i class="fa-solid fa-plus"></i>
-              Add to playlist
-            </button>
-            <button
-              class="action-btn secondary"
-              @click="handleDownloadSelectedAlbum"
-              :disabled="!albumTracks.length"
-            >
-              <i class="fa-solid fa-download"></i>
-              Download album
-            </button>
-          </div>
-        </div>
-        <div class="album-tracks">
+        <div v-if="mode === 'songs' && displaySongs.length" class="music-list">
           <div class="music-header">
             <button class="music-sort" @click="setSort('title')">Song</button>
             <button class="music-sort" @click="setSort('album')">Album</button>
@@ -1299,155 +1210,245 @@ onMounted(() => {
             <button class="music-sort" @click="setSort('duration')">Duration</button>
           </div>
           <button
-          v-for="track in sortedAlbumTracks"
-          :key="itemKey(track)"
-          class="music-row"
-          :class="{ selected: isSelectedTrack(track) }"
-          @click="handleTrackClick(track, $event)"
-          @contextmenu.prevent="openContextMenu($event, track)"
-        >
-            <div class="music-title">{{ trackTitle(track) }}</div>
-            <div>{{ trackAlbum(track) }}</div>
-            <div>{{ trackArtist(track) }}</div>
-            <div>{{ formatDuration(track.duration) || '--' }}</div>
-          </button>
-        </div>
-      </div>
-
-      <div v-if="mode === 'playlists' && !selectedPlaylist" class="playlist-grid">
-        <button
-          v-for="playlist in playlists"
-          :key="playlist.id"
-          class="playlist-card"
-          @click="selectPlaylist(playlist)"
-        >
-          <div class="playlist-card-title">{{ playlist.name }}</div>
-          <div class="meta">{{ playlist.tracks.length }} tracks</div>
-          <div class="meta" v-if="playlist.isDraft">Draft</div>
-        </button>
-        <div v-if="!playlists.length" class="empty-state">
-          Right-click a track to start a playlist.
-        </div>
-      </div>
-
-      <div v-if="mode === 'playlists' && selectedPlaylist" class="playlist-detail">
-        <div class="playlist-detail-header">
-          <input
-            class="playlist-name-input"
-            type="text"
-            :value="selectedPlaylist.name"
-            @input="updatePlaylistName($event.target.value)"
-          />
-          <div class="playlist-detail-actions">
-            <button class="action-btn secondary" @click="savePlaylist">
-              <i class="fa-solid fa-floppy-disk"></i>
-              Save
-            </button>
-            <button
-              class="action-btn secondary"
-              @click="handleDownloadPlaylistTracks"
-              :disabled="!playlistTracks.length"
-            >
-              <i class="fa-solid fa-download"></i>
-              Download playlist
-            </button>
-            <button class="action-btn secondary" @click="clearPlaylist">
-              <i class="fa-solid fa-trash"></i>
-              Clear
-            </button>
-          </div>
-        </div>
-        <div class="album-tracks">
-          <div class="music-header">
-            <button class="music-sort" @click="setSort('title')">Song</button>
-            <button class="music-sort" @click="setSort('album')">Album</button>
-            <button class="music-sort" @click="setSort('artist')">Artist</button>
-            <button class="music-sort" @click="setSort('duration')">Duration</button>
-          </div>
-          <button
-          v-for="track in sortedPlaylistTracks"
-          :key="itemKey(track)"
-          class="music-row"
-          :class="{ selected: isSelectedTrack(track) }"
-          @click="handleTrackClick(track, $event)"
-          @contextmenu.prevent="openContextMenu($event, track)"
-        >
-            <div class="music-title">{{ trackTitle(track) }}</div>
-            <div>{{ trackAlbum(track) }}</div>
-            <div>{{ trackArtist(track) }}</div>
-            <div>{{ formatDuration(track.duration) || '--' }}</div>
-          </button>
-        </div>
-      </div>
-
-      <div v-if="mode === 'artists' && !isArtistDetail" class="artist-list">
-        <button
-          v-for="artist in filteredArtists"
-          :key="artist.artist"
-          class="artist-row"
-          :class="{ selected: selectedArtist?.artist === artist.artist }"
-          @click="selectArtist(artist)"
-        >
-          <div class="music-title">{{ artist.artist }}</div>
-          <div class="meta">{{ artist.albums }} albums</div>
-          <div class="meta">{{ artist.tracks }} tracks</div>
-        </button>
-      </div>
-
-      <div v-if="isArtistDetail" class="artist-detail">
-        <div class="artist-detail-header">
-          <div class="album-detail-title">{{ selectedArtist?.artist || 'Unknown Artist' }}</div>
-          <div class="meta">{{ selectedArtistAlbumCount }} albums</div>
-          <div class="meta">{{ selectedArtistTrackCount }} tracks</div>
-        </div>
-        <div v-if="selectedArtistAlbums.length" class="artist-detail-albums">
-          <div class="sidebar-title">Albums</div>
-          <div class="artist-album-grid">
-            <button
-              v-for="album in selectedArtistAlbums"
-              :key="album.key"
-              class="album-card artist-album-card"
-              @click="selectAlbum(album, { fromArtist: true })"
-              @contextmenu.prevent="openAlbumMenu($event, album)"
-            >
-              <div class="album-art">
-                <img
-                  v-if="album.coverKey && !hasArtistAlbumCoverError(album)"
-                  :src="albumArtUrl(rootId, album.coverKey)"
-                  :alt="album.album"
-                  @error="markArtistAlbumCoverError(album)"
-                />
-                <div v-else class="tile-fallback"><i class="fa-solid fa-compact-disc"></i></div>
-              </div>
-              <div class="music-title">{{ album.album }}</div>
-              <div class="meta">{{ album.tracks }} tracks</div>
-            </button>
-          </div>
-        </div>
-        <div class="album-tracks">
-          <div class="music-header">
-            <button class="music-sort" @click="setSort('title')">Song</button>
-            <button class="music-sort" @click="setSort('album')">Album</button>
-            <button class="music-sort" @click="setSort('artist')">Artist</button>
-            <button class="music-sort" @click="setSort('duration')">Duration</button>
-          </div>
-          <button
-            v-for="track in sortedArtistTracks"
-            :key="itemKey(track)"
+            v-for="item in sortedSongs"
+            :key="itemKey(item)"
             class="music-row"
-            :class="{ selected: isSelectedTrack(track) }"
-            @click="handleTrackClick(track, $event)"
-            @contextmenu.prevent="openContextMenu($event, track)"
+            :class="{ selected: isSelectedTrack(item) }"
+            @click="handleTrackClick(item, $event)"
+            @contextmenu.prevent="openContextMenu($event, item)"
           >
-            <div class="music-title">{{ trackTitle(track) }}</div>
-            <div>{{ trackAlbum(track) }}</div>
-            <div>{{ trackArtist(track) }}</div>
-            <div>{{ formatDuration(track.duration) || '--' }}</div>
+            <div class="music-title">{{ trackTitle(item) }}</div>
+            <div>{{ trackAlbum(item) }}</div>
+            <div>{{ trackArtist(item) }}</div>
+            <div>{{ formatDuration(item.duration) || '--' }}</div>
           </button>
         </div>
-      </div>
 
-      <div ref="sentinel" class="scroll-sentinel"></div>
+        <div v-if="mode === 'albums' && !selectedAlbum" class="album-grid">
+          <button
+            v-for="album in filteredAlbums"
+            :key="album.albumKey"
+            class="album-card"
+            :class="{ selected: selectedAlbum?.albumKey === album.albumKey }"
+            @click="selectAlbum(album)"
+            @contextmenu.prevent="openAlbumMenu($event, album)"
+          >
+            <div class="album-art">
+              <img
+                v-if="album.coverKey"
+                :src="albumArtUrl(rootId, album.coverKey)"
+                :alt="album.album"
+              />
+              <div v-else class="tile-fallback"><i class="fa-solid fa-compact-disc"></i></div>
+            </div>
+            <strong>{{ album.album }}</strong>
+            <div class="meta">{{ album.artist }}</div>
+            <div class="meta">{{ album.tracks }} tracks</div>
+          </button>
+        </div>
+
+        <div v-if="mode === 'albums' && selectedAlbum" class="album-detail">
+          <div class="album-detail-header">
+            <div class="album-detail-art">
+              <img
+                v-if="selectedAlbum.coverKey"
+                :src="albumArtUrl(rootId, selectedAlbum.coverKey)"
+                :alt="selectedAlbum.album"
+              />
+              <div v-else class="tile-fallback"><i class="fa-solid fa-compact-disc"></i></div>
+            </div>
+            <div class="album-detail-info">
+              <div class="album-detail-title">{{ selectedAlbumTitle }}</div>
+              <div class="meta">{{ selectedAlbumArtist }}</div>
+              <div v-if="selectedAlbum.releaseDate" class="meta">
+                Released {{ selectedAlbum.releaseDate }}
+              </div>
+              <div class="meta">{{ albumTrackCount }} tracks</div>
+            </div>
+            <div class="album-detail-actions">
+              <button class="action-btn secondary" @click="addAlbumToPlaylist">
+                <i class="fa-solid fa-plus"></i>
+                Add to playlist
+              </button>
+              <button
+                class="action-btn secondary"
+                @click="handleDownloadSelectedAlbum"
+                :disabled="!albumTracks.length"
+              >
+                <i class="fa-solid fa-download"></i>
+                Download album
+              </button>
+            </div>
+          </div>
+          <div class="album-tracks">
+            <div class="music-header">
+              <button class="music-sort" @click="setSort('title')">Song</button>
+              <button class="music-sort" @click="setSort('album')">Album</button>
+              <button class="music-sort" @click="setSort('artist')">Artist</button>
+              <button class="music-sort" @click="setSort('duration')">Duration</button>
+            </div>
+            <button
+              v-for="track in sortedAlbumTracks"
+              :key="itemKey(track)"
+              class="music-row"
+              :class="{ selected: isSelectedTrack(track) }"
+              @click="handleTrackClick(track, $event)"
+              @contextmenu.prevent="openContextMenu($event, track)"
+            >
+              <div class="music-title">{{ trackTitle(track) }}</div>
+              <div>{{ trackAlbum(track) }}</div>
+              <div>{{ trackArtist(track) }}</div>
+              <div>{{ formatDuration(track.duration) || '--' }}</div>
+            </button>
+          </div>
+        </div>
+
+        <div v-if="mode === 'playlists' && !selectedPlaylist" class="playlist-grid">
+          <button
+            v-for="playlist in playlists"
+            :key="playlist.id"
+            class="playlist-card"
+            @click="selectPlaylist(playlist)"
+          >
+            <div class="playlist-card-title">{{ playlist.name }}</div>
+            <div class="meta">{{ playlist.tracks.length }} tracks</div>
+            <div class="meta" v-if="playlist.isDraft">Draft</div>
+          </button>
+          <div v-if="!playlists.length" class="empty-state">
+            Right-click a track to start a playlist.
+          </div>
+        </div>
+
+        <div v-if="mode === 'playlists' && selectedPlaylist" class="playlist-detail">
+          <div class="playlist-detail-header">
+            <input
+              class="playlist-name-input"
+              type="text"
+              :value="selectedPlaylist.name"
+              @input="updatePlaylistName($event.target.value)"
+            />
+            <div class="playlist-detail-actions">
+              <button class="action-btn secondary" @click="savePlaylist">
+                <i class="fa-solid fa-floppy-disk"></i>
+                Save
+              </button>
+              <button
+                class="action-btn secondary"
+                @click="handleDownloadPlaylistTracks"
+                :disabled="!playlistTracks.length"
+              >
+                <i class="fa-solid fa-download"></i>
+                Download playlist
+              </button>
+              <button class="action-btn secondary" @click="clearPlaylist">
+                <i class="fa-solid fa-trash"></i>
+                Clear
+              </button>
+            </div>
+          </div>
+          <div class="album-tracks">
+            <div class="music-header">
+              <button class="music-sort" @click="setSort('title')">Song</button>
+              <button class="music-sort" @click="setSort('album')">Album</button>
+              <button class="music-sort" @click="setSort('artist')">Artist</button>
+              <button class="music-sort" @click="setSort('duration')">Duration</button>
+            </div>
+            <button
+              v-for="track in sortedPlaylistTracks"
+              :key="itemKey(track)"
+              class="music-row"
+              :class="{ selected: isSelectedTrack(track) }"
+              @click="handleTrackClick(track, $event)"
+              @contextmenu.prevent="openContextMenu($event, track)"
+            >
+              <div class="music-title">{{ trackTitle(track) }}</div>
+              <div>{{ trackAlbum(track) }}</div>
+              <div>{{ trackArtist(track) }}</div>
+              <div>{{ formatDuration(track.duration) || '--' }}</div>
+            </button>
+          </div>
+        </div>
+
+        <div v-if="mode === 'artists' && !isArtistDetail" class="artist-list">
+          <button
+            v-for="artist in filteredArtists"
+            :key="artist.artist"
+            class="artist-row"
+            :class="{ selected: selectedArtist?.artist === artist.artist }"
+            @click="selectArtist(artist)"
+          >
+            <div class="music-title">{{ artist.artist }}</div>
+            <div class="meta">{{ artist.albums }} albums</div>
+            <div class="meta">{{ artist.tracks }} tracks</div>
+          </button>
+        </div>
+
+        <div v-if="isArtistDetail" class="artist-detail">
+          <div class="artist-detail-header">
+            <div class="album-detail-title">{{ selectedArtist?.artist || 'Unknown Artist' }}</div>
+            <div class="meta">{{ selectedArtistAlbumCount }} albums</div>
+            <div class="meta">{{ selectedArtistTrackCount }} tracks</div>
+          </div>
+          <div v-if="selectedArtistAlbums.length" class="artist-detail-albums">
+            <div class="sidebar-title">Albums</div>
+            <div class="artist-album-grid">
+              <button
+                v-for="album in selectedArtistAlbums"
+                :key="album.key"
+                class="album-card artist-album-card"
+                @click="selectAlbum(album, { fromArtist: true })"
+                @contextmenu.prevent="openAlbumMenu($event, album)"
+              >
+                <div class="album-art">
+                  <img
+                    v-if="album.coverKey && !hasArtistAlbumCoverError(album)"
+                    :src="albumArtUrl(rootId, album.coverKey)"
+                    :alt="album.album"
+                    @error="markArtistAlbumCoverError(album)"
+                  />
+                  <div v-else class="tile-fallback"><i class="fa-solid fa-compact-disc"></i></div>
+                </div>
+                <div class="music-title">{{ album.album }}</div>
+                <div class="meta">{{ album.tracks }} tracks</div>
+              </button>
+            </div>
+          </div>
+          <div class="album-tracks">
+            <div class="music-header">
+              <button class="music-sort" @click="setSort('title')">Song</button>
+              <button class="music-sort" @click="setSort('album')">Album</button>
+              <button class="music-sort" @click="setSort('artist')">Artist</button>
+              <button class="music-sort" @click="setSort('duration')">Duration</button>
+            </div>
+            <button
+              v-for="track in sortedArtistTracks"
+              :key="itemKey(track)"
+              class="music-row"
+              :class="{ selected: isSelectedTrack(track) }"
+              @click="handleTrackClick(track, $event)"
+              @contextmenu.prevent="openContextMenu($event, track)"
+            >
+              <div class="music-title">{{ trackTitle(track) }}</div>
+              <div>{{ trackAlbum(track) }}</div>
+              <div>{{ trackArtist(track) }}</div>
+              <div>{{ formatDuration(track.duration) || '--' }}</div>
+            </button>
+          </div>
+        </div>
+
+        <div ref="sentinel" class="scroll-sentinel"></div>
+      </ViewScrollArea>
+
+      <div class="music-player-overlay">
+        <MiniPlayer
+          class="music-floating-player"
+          :tracks="queue"
+          :selected-track="selectedTrack"
+          :root-id="rootId"
+          :auto-play="true"
+          @select="selectTrack"
+        />
+      </div>
     </main>
 
     <div
@@ -1501,12 +1502,4 @@ onMounted(() => {
     </div>
 
   </section>
-
-  <MiniPlayer
-    :tracks="queue"
-    :selected-track="selectedTrack"
-    :root-id="rootId"
-    :auto-play="true"
-    @select="selectTrack"
-  />
 </template>

@@ -7,7 +7,7 @@
   "trashDir": "./data/trash",
   "hostFsRoot": "/host",
   "lowResourceMode": true,
-  "scanIntervalSeconds": 3600,
+  "scanIntervalSeconds": 10800,
   "fastScan": true,
   "scanBatchSize": 200,
   "scanFsConcurrency": 2,

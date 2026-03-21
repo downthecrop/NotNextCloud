@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue';
 import { useApi } from '../composables/useApi';
 import { useDownloads } from '../composables/useDownloads';
 import { useImageErrors } from '../composables/useImageErrors';
@@ -13,6 +13,11 @@ import { useSort } from '../composables/useSort';
 import { useSidebar } from '../composables/useSidebar';
 import { useDraftCollection } from '../composables/useDraftCollection';
 import { usePinnedLocations } from '../composables/usePinnedLocations';
+import AppSidebar from '../components/AppSidebar.vue';
+import SidebarNavItem from '../components/SidebarNavItem.vue';
+import SidebarSection from '../components/SidebarSection.vue';
+import ViewScrollArea from '../components/ViewScrollArea.vue';
+import ViewToolbar from '../components/ViewToolbar.vue';
 import { formatDate, formatSize } from '../utils/formatting';
 import { itemKey as buildItemKey } from '../utils/itemKey';
 import { isImage, isVideo } from '../utils/media';
@@ -87,6 +92,7 @@ const requestVersion = ref(0);
 let searchAbortController = null;
 let inFlightMediaRequest = null;
 let inFlightSearchRequest = null;
+const browserScroll = ref(null);
 const topSentinel = ref(null);
 const photoHeadBuffer = ref([]);
 const photoTailBuffer = ref([]);
@@ -96,6 +102,7 @@ let topObserver = null;
 let topIntersecting = false;
 let wheelRafId = 0;
 let pendingWheelDelta = 0;
+let topRestoreInFlight = false;
 const startDate = ref('');
 const endDate = ref('');
 const {
@@ -117,6 +124,7 @@ const {
 } = usePinnedLocations({ storageKey: 'localCloudPhotoPins' });
 
 const rootId = computed(() => props.currentRoot?.id || '');
+const browserScrollRoot = computed(() => browserScroll.value?.scrollEl || null);
 const timelineDateFormatter = new Intl.DateTimeFormat('en-US', {
   month: 'long',
   day: 'numeric',
@@ -124,6 +132,10 @@ const timelineDateFormatter = new Intl.DateTimeFormat('en-US', {
 });
 function itemKey(item) {
   return buildItemKey(item);
+}
+
+function getScrollContainer() {
+  return browserScrollRoot.value;
 }
 
 const { hasImageError, markImageError, resetImageErrors } = useImageErrors({
@@ -502,6 +514,49 @@ function prependToTailBuffer(bufferRef, removed) {
   bufferRef.value = [...removed, ...bufferRef.value];
 }
 
+function windowScrollTop() {
+  const container = getScrollContainer();
+  if (!container) {
+    return 0;
+  }
+  return container.scrollTop || 0;
+}
+
+function windowScrollHeight() {
+  const container = getScrollContainer();
+  if (!container) {
+    return 0;
+  }
+  return container.scrollHeight || 0;
+}
+
+function windowViewportHeight() {
+  const container = getScrollContainer();
+  if (!container) {
+    return 0;
+  }
+  return container.clientHeight || 0;
+}
+
+function adjustWindowScrollByDelta(heightDelta) {
+  const container = getScrollContainer();
+  if (!Number.isFinite(heightDelta) || heightDelta === 0 || !container) {
+    return;
+  }
+  const maxBefore = Math.max(0, windowScrollHeight() - windowViewportHeight());
+  const current = windowScrollTop();
+  const next = Math.max(0, Math.min(maxBefore, current + heightDelta));
+  container.scrollTop = next;
+}
+
+async function withScrollAnchor(mutator) {
+  const beforeHeight = windowScrollHeight();
+  mutator();
+  await nextTick();
+  const afterHeight = windowScrollHeight();
+  adjustWindowScrollByDelta(afterHeight - beforeHeight);
+}
+
 function trimWindowFromTop(listRef, headBufferRef) {
   if (!Array.isArray(listRef.value)) {
     return false;
@@ -553,21 +608,43 @@ function restoreFromTailBuffer({ listRef, headBufferRef, tailBufferRef }) {
   return true;
 }
 
-function restoreFromTopWindow() {
-  if (loading.value || isAlbumDetail.value) {
+async function trimCurrentWindowFromTop() {
+  if (modalOpen.value || isAlbumDetail.value) {
     return false;
   }
-  const restored = isSearchMode.value
-    ? restoreFromHeadBuffer({
-        listRef: searchResults,
-        headBufferRef: searchHeadBuffer,
-        tailBufferRef: searchTailBuffer,
-      })
-    : restoreFromHeadBuffer({
-        listRef: items,
-        headBufferRef: photoHeadBuffer,
-        tailBufferRef: photoTailBuffer,
-      });
+  const useSearch = isSearchMode.value;
+  const listRef = useSearch ? searchResults : items;
+  const headBufferRef = useSearch ? searchHeadBuffer : photoHeadBuffer;
+  if (!Array.isArray(listRef.value) || listRef.value.length <= PHOTO_RENDER_QUEUE_MAX) {
+    return false;
+  }
+  await withScrollAnchor(() => {
+    trimWindowFromTop(listRef, headBufferRef);
+  });
+  if (selectionCount.value) {
+    clearSelection();
+  }
+  return true;
+}
+
+async function restoreFromTopWindow() {
+  if (loading.value || isAlbumDetail.value || topRestoreInFlight) {
+    return false;
+  }
+  topRestoreInFlight = true;
+  let restored = false;
+  const useSearch = isSearchMode.value;
+  const listRef = useSearch ? searchResults : items;
+  const headBufferRef = useSearch ? searchHeadBuffer : photoHeadBuffer;
+  const tailBufferRef = useSearch ? searchTailBuffer : photoTailBuffer;
+  await withScrollAnchor(() => {
+    restored = restoreFromHeadBuffer({
+      listRef,
+      headBufferRef,
+      tailBufferRef,
+    });
+  });
+  topRestoreInFlight = false;
   if (restored && selectionCount.value) {
     clearSelection();
   }
@@ -605,33 +682,19 @@ function setupTopObserver() {
       }
       if (entry.isIntersecting && !topIntersecting) {
         topIntersecting = true;
-        restoreFromTopWindow();
+        void restoreFromTopWindow();
       } else if (!entry.isIntersecting) {
         topIntersecting = false;
       }
     },
-    { rootMargin: '240px 0px 240px 0px' }
+    {
+      root: browserScrollRoot.value || null,
+      rootMargin: '240px 0px 240px 0px',
+    }
   );
   if (topSentinel.value) {
     topObserver.observe(topSentinel.value);
   }
-}
-
-function windowScrollTop() {
-  if (typeof window === 'undefined') {
-    return 0;
-  }
-  return window.scrollY || window.pageYOffset || document.documentElement?.scrollTop || 0;
-}
-
-function windowScrollHeight() {
-  if (typeof document === 'undefined') {
-    return 0;
-  }
-  return Math.max(
-    document.documentElement?.scrollHeight || 0,
-    document.body?.scrollHeight || 0
-  );
 }
 
 function isNearWindowTop() {
@@ -639,10 +702,11 @@ function isNearWindowTop() {
 }
 
 function isNearWindowBottom() {
-  if (typeof window === 'undefined') {
+  const viewportHeight = windowViewportHeight();
+  if (!viewportHeight) {
     return false;
   }
-  const viewportBottom = windowScrollTop() + (window.innerHeight || 0);
+  const viewportBottom = windowScrollTop() + viewportHeight;
   return windowScrollHeight() - viewportBottom <= PHOTO_WHEEL_EDGE_THRESHOLD;
 }
 
@@ -664,7 +728,7 @@ function handleWindowWheel(event) {
     pendingWheelDelta = 0;
     if (nextDelta < 0) {
       if (isNearWindowTop()) {
-        restoreFromTopWindow();
+        void restoreFromTopWindow();
       }
       return;
     }
@@ -717,10 +781,8 @@ async function loadPhotos({ reset = true } = {}) {
   inFlightMediaRequest = { key: requestKey, promise: requestPromise };
   try {
     const result = await requestPromise;
-    if (result?.ok && trimWindowFromTop(items, photoHeadBuffer)) {
-      if (selectionCount.value) {
-        clearSelection();
-      }
+    if (result?.ok) {
+      await trimCurrentWindowFromTop();
     }
     return result;
   } finally {
@@ -791,10 +853,8 @@ async function runSearch({ reset = true } = {}) {
   inFlightSearchRequest = { key: requestKey, promise: requestPromise };
   try {
     const result = await requestPromise;
-    if (result?.ok && trimWindowFromTop(searchResults, searchHeadBuffer)) {
-      if (selectionCount.value) {
-        clearSelection();
-      }
+    if (result?.ok) {
+      await trimCurrentWindowFromTop();
     }
     return result;
   } finally {
@@ -820,6 +880,7 @@ async function loadMore() {
 
 const { sentinel } = useInfiniteScroll(loadMore, {
   canLoadMore: () => !loading.value && hasMore.value,
+  rootRef: browserScrollRoot,
 });
 
 useDebouncedWatch(searchQuery, () => runSearch({ reset: true }));
@@ -887,20 +948,18 @@ watch([searchQuery, startDate, endDate, selectedAlbumId], () => {
 
 onMounted(() => {
   setupTopObserver();
-  if (typeof window !== 'undefined') {
-    window.addEventListener('wheel', handleWindowWheel, { passive: true });
-  }
   loadAlbums();
   loadPins();
 });
 
 onUnmounted(() => {
-  if (typeof window !== 'undefined') {
-    window.removeEventListener('wheel', handleWindowWheel);
-    if (wheelRafId) {
-      window.cancelAnimationFrame(wheelRafId);
-      wheelRafId = 0;
-    }
+  const container = getScrollContainer();
+  if (container) {
+    container.removeEventListener('wheel', handleWindowWheel);
+  }
+  if (typeof window !== 'undefined' && wheelRafId) {
+    window.cancelAnimationFrame(wheelRafId);
+    wheelRafId = 0;
   }
   if (topObserver) {
     topObserver.disconnect();
@@ -921,6 +980,16 @@ watch(topSentinel, (value, oldValue) => {
   }
 });
 
+watch(browserScrollRoot, (value, oldValue) => {
+  if (oldValue) {
+    oldValue.removeEventListener('wheel', handleWindowWheel);
+  }
+  if (value) {
+    value.addEventListener('wheel', handleWindowWheel, { passive: true });
+  }
+  setupTopObserver();
+}, { immediate: true });
+
 watch(
   () => displayItems.value,
   () => {
@@ -931,55 +1000,47 @@ watch(
 
 <template>
   <section class="layout layout-wide photos-layout" :class="{ 'sidebar-open': sidebarOpen }">
-    <aside class="sidebar">
-      <h3>Photos</h3>
-      <div class="sidebar-section">
-        <div class="sidebar-title">Albums</div>
-        <button class="sidebar-item" :class="{ active: !selectedAlbumId }" @click="handleAlbumClear">
-          <span class="icon"><i class="fa-regular fa-images"></i></span>
+    <AppSidebar title="Photos">
+      <SidebarSection title="Albums">
+        <SidebarNavItem icon="fa-regular fa-images" :active="!selectedAlbumId" @click="handleAlbumClear">
           All photos
-        </button>
-        <button class="sidebar-item" @click="handleCreateAlbum">
-          <span class="icon"><i class="fa-solid fa-plus"></i></span>
+        </SidebarNavItem>
+        <SidebarNavItem icon="fa-solid fa-plus" @click="handleCreateAlbum">
           Create album
-        </button>
-        <button
+        </SidebarNavItem>
+        <SidebarNavItem
           v-for="album in albums"
           :key="album.id"
-          class="sidebar-item"
-          :class="{ active: selectedAlbumId === album.id }"
+          icon="fa-solid fa-photo-film"
+          :active="selectedAlbumId === album.id"
+          :count="album.items.length"
           @click="handleAlbumSelect(album)"
         >
-          <span class="icon"><i class="fa-solid fa-photo-film"></i></span>
-          <span class="sidebar-label">{{ album.name }}</span>
-          <span class="sidebar-count">{{ album.items.length }}</span>
-        </button>
+          {{ album.name }}
+        </SidebarNavItem>
         <div v-if="!albums.length" class="sidebar-hint">Add photos to start an album.</div>
-      </div>
-      <div class="sidebar-section">
-        <div class="sidebar-title">Pinned</div>
-        <button class="sidebar-item" :class="{ active: !activePin }" @click="handlePinClear">
-          <span class="icon"><i class="fa-regular fa-bookmark"></i></span>
+      </SidebarSection>
+      <SidebarSection title="Pinned">
+        <SidebarNavItem icon="fa-regular fa-bookmark" :active="!activePin" @click="handlePinClear">
           All locations
-        </button>
-        <button
+        </SidebarNavItem>
+        <SidebarNavItem
           v-for="pin in photoPins"
           :key="pin.id"
-          class="sidebar-item"
-          :class="{ active: activePin?.id === pin.id }"
+          icon="fa-solid fa-location-dot"
+          :active="activePin?.id === pin.id"
           @click="handlePinSelect(pin)"
         >
-          <span class="icon"><i class="fa-solid fa-location-dot"></i></span>
-          <span class="sidebar-label">{{ pin.label }}</span>
-        </button>
+          {{ pin.label }}
+        </SidebarNavItem>
         <div v-if="!photoPins.length" class="sidebar-hint">Right-click a photo to pin.</div>
-      </div>
-    </aside>
+      </SidebarSection>
+    </AppSidebar>
     <div class="sidebar-scrim" @click="closeSidebar"></div>
 
     <main class="browser photos-browser">
-      <div class="toolbar">
-        <div class="toolbar-title">
+      <ViewToolbar>
+        <template #title>
           <div class="toolbar-line">
             <button class="icon-btn sidebar-toggle" @click="toggleSidebar" aria-label="Toggle sidebar">
               <i class="fa-solid fa-bars"></i>
@@ -994,8 +1055,8 @@ watch(
               - {{ photosMeta }}
             </span>
           </div>
-        </div>
-        <div class="toolbar-actions">
+        </template>
+        <template #actions>
           <input
             v-if="!selectedAlbum"
             class="search"
@@ -1019,22 +1080,81 @@ watch(
           >
             Download ({{ selectionCount }})
           </button>
+        </template>
+      </ViewToolbar>
+
+      <ViewScrollArea ref="browserScroll">
+        <div v-if="loading && !displayItems.length" class="empty-state">Loading timeline...</div>
+        <div v-else-if="error" class="empty-state">{{ error }}</div>
+        <div v-else-if="!displayItems.length" class="empty-state">
+          Add photos or videos to your storage root to see the timeline.
         </div>
-      </div>
 
-      <div v-if="loading && !displayItems.length" class="empty-state">Loading timeline...</div>
-      <div v-else-if="error" class="empty-state">{{ error }}</div>
-      <div v-else-if="!displayItems.length" class="empty-state">
-        Add photos or videos to your storage root to see the timeline.
-      </div>
-
-      <div v-else-if="!selectedAlbum" class="timeline">
-        <div v-if="canRestoreFromTop" ref="topSentinel" class="scroll-sentinel"></div>
-        <div v-for="group in timelineGroups" :key="group.label" class="timeline-group">
-          <div class="timeline-label">{{ group.label }}</div>
-          <div class="timeline-grid">
+        <div v-else-if="!selectedAlbum" class="timeline">
+          <div v-if="canRestoreFromTop" ref="topSentinel" class="scroll-sentinel"></div>
+          <div v-for="group in timelineGroups" :key="group.label" class="timeline-group">
+            <div class="timeline-label">{{ group.label }}</div>
+            <div class="timeline-grid">
+              <div
+                v-for="(item, index) in group.items"
+                :key="itemKey(item)"
+                :class="tileClass(item)"
+                @click="handleItemClick(item, $event)"
+                @contextmenu.prevent="openContextMenu($event, item)"
+              >
+                <img
+                  v-if="(isImage(item) || isVideo(item)) && !hasImageError(item, 'tile')"
+                  :src="previewUrl(itemRootId(item), item.path, { previewKey: item.previewKey, mtime: item.mtime, mime: item.mime })"
+                  :alt="item.name"
+                  loading="lazy"
+                  @error="markImageError(item, 'tile')"
+                />
+                <div
+                  v-else-if="isImage(item) || isVideo(item)"
+                  class="tile-fallback media-fallback compact"
+                >
+                  <i class="fa-solid fa-file-circle-xmark"></i>
+                  <span>{{ item.ext?.replace('.', '').toUpperCase() || 'FILE' }}</span>
+                </div>
+                <div v-else class="tile-fallback"><i class="fa-solid fa-file"></i></div>
+                <span v-if="isVideo(item)" class="tile-badge" aria-hidden="true">
+                  <i class="fa-solid fa-video"></i>
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div v-else class="photo-album-detail">
+          <div class="photo-album-header">
+            <input
+              class="photo-album-name"
+              type="text"
+              :value="selectedAlbum.name"
+              @input="updateAlbumName($event.target.value)"
+            />
+            <div class="photo-album-actions">
+              <button class="action-btn secondary" @click="saveAlbum">
+                <i class="fa-solid fa-floppy-disk"></i>
+                Save
+              </button>
+              <button
+                class="action-btn secondary"
+                @click="handleDownloadAlbum"
+                :disabled="!sortedAlbumItems.length"
+              >
+                <i class="fa-solid fa-download"></i>
+                Download album
+              </button>
+              <button class="action-btn secondary" @click="clearAlbum">
+                <i class="fa-solid fa-trash"></i>
+                Clear
+              </button>
+            </div>
+          </div>
+          <div v-if="!albumItems.length" class="empty-state">This album is empty.</div>
+          <div v-else class="photo-album-grid">
             <div
-              v-for="(item, index) in group.items"
+              v-for="(item, index) in sortedAlbumItems"
               :key="itemKey(item)"
               :class="tileClass(item)"
               @click="handleItemClick(item, $event)"
@@ -1061,69 +1181,12 @@ watch(
             </div>
           </div>
         </div>
-      </div>
-      <div v-else class="photo-album-detail">
-        <div class="photo-album-header">
-          <input
-            class="photo-album-name"
-            type="text"
-            :value="selectedAlbum.name"
-            @input="updateAlbumName($event.target.value)"
-          />
-          <div class="photo-album-actions">
-            <button class="action-btn secondary" @click="saveAlbum">
-              <i class="fa-solid fa-floppy-disk"></i>
-              Save
-            </button>
-            <button
-              class="action-btn secondary"
-              @click="handleDownloadAlbum"
-              :disabled="!sortedAlbumItems.length"
-            >
-              <i class="fa-solid fa-download"></i>
-              Download album
-            </button>
-            <button class="action-btn secondary" @click="clearAlbum">
-              <i class="fa-solid fa-trash"></i>
-              Clear
-            </button>
-          </div>
-        </div>
-        <div v-if="!albumItems.length" class="empty-state">This album is empty.</div>
-        <div v-else class="photo-album-grid">
-          <div
-            v-for="(item, index) in sortedAlbumItems"
-            :key="itemKey(item)"
-            :class="tileClass(item)"
-            @click="handleItemClick(item, $event)"
-            @contextmenu.prevent="openContextMenu($event, item)"
-          >
-            <img
-              v-if="(isImage(item) || isVideo(item)) && !hasImageError(item, 'album')"
-              :src="previewUrl(itemRootId(item), item.path, { previewKey: item.previewKey, mtime: item.mtime, mime: item.mime })"
-              :alt="item.name"
-              loading="lazy"
-              @error="markImageError(item, 'album')"
-            />
-            <div
-              v-else-if="isImage(item) || isVideo(item)"
-              class="tile-fallback media-fallback compact"
-            >
-              <i class="fa-solid fa-file-circle-xmark"></i>
-              <span>{{ item.ext?.replace('.', '').toUpperCase() || 'FILE' }}</span>
-            </div>
-            <div v-else class="tile-fallback"><i class="fa-solid fa-file"></i></div>
-            <span v-if="isVideo(item)" class="tile-badge" aria-hidden="true">
-              <i class="fa-solid fa-video"></i>
-            </span>
-          </div>
-        </div>
-      </div>
 
-      <div v-if="hasMore" class="empty-state">
-        <button class="action-btn secondary" @click="loadMore">Load more</button>
-      </div>
-      <div ref="sentinel" class="scroll-sentinel"></div>
+        <div v-if="hasMore" class="empty-state">
+          <button class="action-btn secondary" @click="loadMore">Load more</button>
+        </div>
+        <div ref="sentinel" class="scroll-sentinel"></div>
+      </ViewScrollArea>
     </main>
   </section>
 

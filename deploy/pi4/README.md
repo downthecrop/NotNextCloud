@@ -23,6 +23,9 @@
 
 ## Notes
 - Default web port is `4170`.
+- Pi template defaults are tuned for responsive UI under load (`previewConcurrency: 1`).
+- Preview warmup on scan is always enabled; for faster background thumbnail fill (higher CPU), set:
+  - `previewConcurrency: 2`
 - Override install location:
   ```bash
   APP_DIR=/srv/notnextcloud2 ./install.sh

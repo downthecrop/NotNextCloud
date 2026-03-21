@@ -504,14 +504,32 @@ watch(
           <i class="fa-solid fa-cloud"></i>
         </button>
         <div class="view-tabs">
-          <button :class="{ active: currentView === 'files' }" @click="setView('files')">
-            Files
+          <button
+            :class="{ active: currentView === 'files' }"
+            @click="setView('files')"
+            aria-label="Files"
+            title="Files"
+          >
+            <i class="fa-regular fa-folder-open"></i>
+            <span class="sr-only">Files</span>
           </button>
-          <button :class="{ active: currentView === 'photos' }" @click="setView('photos')">
-            Photos
+          <button
+            :class="{ active: currentView === 'photos' }"
+            @click="setView('photos')"
+            aria-label="Photos"
+            title="Photos"
+          >
+            <i class="fa-regular fa-images"></i>
+            <span class="sr-only">Photos</span>
           </button>
-          <button :class="{ active: currentView === 'music' }" @click="setView('music')">
-            Music
+          <button
+            :class="{ active: currentView === 'music' }"
+            @click="setView('music')"
+            aria-label="Music"
+            title="Music"
+          >
+            <i class="fa-solid fa-music"></i>
+            <span class="sr-only">Music</span>
           </button>
         </div>
       </div>
