@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch, onMounted, nextTick } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue';
 import { useApi } from '../composables/useApi';
 import { useDownloads } from '../composables/useDownloads';
 import { useInfiniteScroll } from '../composables/useInfiniteScroll';
@@ -56,6 +56,10 @@ const props = defineProps({
     type: Function,
     required: true,
   },
+  onTitleChange: {
+    type: Function,
+    default: null,
+  },
 });
 
 const { albumArtUrl } = useApi();
@@ -92,6 +96,7 @@ const {
   loadEntries: loadPlaylists,
   persistEntries: persistPlaylists,
   ensureDraftEntry: ensureDraftPlaylist,
+  removeEntry: removePlaylistEntry,
 } = useDraftCollection({
   storageKey: 'localCloudPlaylists',
   counterKey: 'localCloudPlaylistCounter',
@@ -110,14 +115,20 @@ const {
   openMenu: openAlbumMenuBase,
   closeMenu: closeAlbumMenu,
 } = useMenu({ album: null });
+const {
+  menu: sidebarMenu,
+  openMenu: openSidebarMenuBase,
+  closeMenu: closeSidebarMenu,
+} = useMenu({ kind: '', playlist: null, pin: null });
 const albumTracks = ref([]);
 const artistTracks = ref([]);
 const musicScrollArea = ref(null);
+const musicBrowserShell = ref(null);
 const artistListScroll = ref({ containerY: 0 });
 const artistAlbumCoverErrors = ref(new Set());
 const albumOpenedFromArtist = ref(false);
 const { sidebarOpen, toggleSidebar, closeSidebar } = useSidebar();
-useGlobalMenuClose([closeContextMenu, closeAlbumMenu]);
+useGlobalMenuClose([closeContextMenu, closeAlbumMenu, closeSidebarMenu]);
 const {
   pins: musicPins,
   activePin,
@@ -126,11 +137,39 @@ const {
   addPinForItemPath,
   setActivePinFromPath,
   selectPin,
+  removePin,
   clearPin,
 } = usePinnedLocations({ storageKey: 'localCloudMusicPins' });
 
 const rootId = computed(() => props.currentRoot?.id || '');
 const musicBrowserRef = computed(() => musicScrollArea.value?.scrollEl || null);
+const viewportWidth = ref(typeof window !== 'undefined' ? window.innerWidth : 0);
+const musicBrowserFrame = ref({ left: 0, width: 0, bottomInset: 0 });
+const isCompactPlayer = computed(() => viewportWidth.value < 700);
+const musicPlayerOverlayStyle = computed(() => {
+  const bottom = `${Math.max(0, Math.round(musicBrowserFrame.value.bottomInset)) + 16}px`;
+  if (isCompactPlayer.value && musicBrowserFrame.value.width > 0) {
+    return {
+      left: `${Math.round(musicBrowserFrame.value.left)}px`,
+      width: `${Math.round(musicBrowserFrame.value.width)}px`,
+      right: 'auto',
+      transform: 'none',
+      bottom,
+    };
+  }
+  return {
+    left: '0',
+    right: '0',
+    width: 'auto',
+    transform: 'none',
+    bottom,
+  };
+});
+const activeLibraryPathPrefix = computed(() =>
+  activePin.value?.kind === 'path' || (!activePin.value?.albumKey && activePinPath.value)
+    ? activePinPath.value || ''
+    : ''
+);
 const isSearchMode = computed(() => Boolean(searchQuery.value.trim()));
 const albumSearchQuery = computed(() =>
   mode.value === 'albums' && !selectedAlbum.value ? searchQuery.value.trim() : ''
@@ -224,6 +263,21 @@ const selectedArtistAlbums = computed(() => {
 });
 const selectedArtistAlbumCount = computed(() => selectedArtistAlbums.value.length);
 const selectedArtistTrackCount = computed(() => artistTracks.value.length);
+let musicBrowserObserver = null;
+
+function updateMusicPlayerOverlayMetrics() {
+  viewportWidth.value = typeof window !== 'undefined' ? window.innerWidth : viewportWidth.value;
+  const rect = musicBrowserShell.value?.getBoundingClientRect();
+  if (!rect) {
+    musicBrowserFrame.value = { left: 0, width: 0, bottomInset: 0 };
+    return;
+  }
+  musicBrowserFrame.value = {
+    left: rect.left,
+    width: rect.width,
+    bottomInset: Math.max(window.innerHeight - rect.bottom, 0),
+  };
+}
 
 const hasMore = computed(() => {
   if (mode.value === 'songs') {
@@ -260,6 +314,37 @@ const songsMeta = computed(() => {
     return `${displaySongs.value.length} of ${totalValue}`;
   }
   return `${displaySongs.value.length}`;
+});
+
+function navigateMusic(nextState) {
+  props.onNavigate({
+    mode: mode.value,
+    albumKey: null,
+    artist: null,
+    playlistId: null,
+    ...nextState,
+  });
+}
+const browserTitle = computed(() => {
+  if (selectedTrack.value) {
+    return `Now Playing: ${trackTitle(selectedTrack.value)} - ${trackArtist(selectedTrack.value)} · Local Cloud`;
+  }
+  if (mode.value === 'albums') {
+    return selectedAlbum.value
+      ? `${selectedAlbumTitle.value} · Albums · Local Cloud`
+      : 'Albums · Local Cloud';
+  }
+  if (mode.value === 'artists') {
+    return selectedArtist.value?.artist
+      ? `${selectedArtist.value.artist} · Artists · Local Cloud`
+      : 'Artists · Local Cloud';
+  }
+  if (mode.value === 'playlists') {
+    return selectedPlaylist.value?.name
+      ? `${selectedPlaylist.value.name} · Playlists · Local Cloud`
+      : 'Playlists · Local Cloud';
+  }
+  return 'Music · Local Cloud';
 });
 
 function trackTitle(item) {
@@ -397,7 +482,7 @@ async function loadTracks({ reset = true } = {}) {
         limit: props.pageSize,
         offset: pageOffset,
         cursor: pageCursor,
-        pathPrefix: activePinPath.value || undefined,
+        pathPrefix: activeLibraryPathPrefix.value || undefined,
         includeTotal: false,
       }),
   });
@@ -443,7 +528,7 @@ async function runSearch({ reset = true } = {}) {
         limit: props.pageSize,
         offset: pageOffset,
         cursor: pageCursor,
-        pathPrefix: activePinPath.value || undefined,
+        pathPrefix: activeLibraryPathPrefix.value || undefined,
         includeTotal: false,
         signal,
       }),
@@ -468,7 +553,7 @@ async function loadAlbums({ reset = true } = {}) {
         rootId: props.currentRoot.id,
         limit: props.pageSize,
         offset: pageOffset,
-        pathPrefix: activePinPath.value || undefined,
+        pathPrefix: activeLibraryPathPrefix.value || undefined,
         query: albumSearchQuery.value || undefined,
       }),
   });
@@ -492,7 +577,7 @@ async function loadArtists({ reset = true } = {}) {
         rootId: props.currentRoot.id,
         limit: props.pageSize,
         offset: pageOffset,
-        pathPrefix: activePinPath.value || undefined,
+        pathPrefix: activeLibraryPathPrefix.value || undefined,
         query: artistSearchQuery.value || undefined,
       }),
   });
@@ -505,7 +590,7 @@ async function loadAlbumTracks(key) {
   const result = await listAlbumTracks({
     rootId: props.currentRoot.id,
     key,
-    pathPrefix: activePinPath.value || undefined,
+    pathPrefix: activeLibraryPathPrefix.value || undefined,
   });
   if (!result.ok) {
     return;
@@ -521,7 +606,7 @@ async function loadArtistTracks(artist) {
   const result = await listArtistTracks({
     rootId: props.currentRoot.id,
     artist,
-    pathPrefix: activePinPath.value || undefined,
+    pathPrefix: activeLibraryPathPrefix.value || undefined,
   });
   if (!result.ok) {
     return;
@@ -590,11 +675,10 @@ async function selectAlbum(album, { fromArtist = false } = {}) {
     artistTracks.value = [];
   }
   await loadAlbumTracks(album.albumKey);
-  props.onNavigate({
+  navigateMusic({
     mode: 'albums',
     albumKey: album.albumKey,
     artist: fromArtist ? selectedArtist.value?.artist || null : null,
-    playlistId: null,
   });
 }
 
@@ -607,10 +691,10 @@ function clearAlbumSelection() {
   albumOpenedFromArtist.value = false;
   if (returnToArtist) {
     mode.value = 'artists';
-    props.onNavigate({ mode: 'artists', albumKey: null, artist: artistName, playlistId: null });
+    navigateMusic({ mode: 'artists', artist: artistName });
     return;
   }
-  props.onNavigate({ mode: 'albums', albumKey: null, artist: null, playlistId: null });
+  navigateMusic({ mode: 'albums' });
 }
 
 async function selectArtist(artist) {
@@ -621,14 +705,14 @@ async function selectArtist(artist) {
   selectedArtist.value = artist;
   selectedAlbum.value = null;
   await loadArtistTracks(artist.artist);
-  props.onNavigate({ mode: 'artists', artist: artist.artist, albumKey: null, playlistId: null });
+  navigateMusic({ mode: 'artists', artist: artist.artist });
 }
 
 async function clearArtistSelection({ restoreScroll = true } = {}) {
   clearTrackSelection();
   selectedArtist.value = null;
   artistTracks.value = [];
-  props.onNavigate({ mode: 'artists', artist: null, albumKey: null, playlistId: null });
+  navigateMusic({ mode: 'artists' });
   if (!restoreScroll) {
     return;
   }
@@ -643,11 +727,9 @@ function selectPlaylist(playlist) {
   selectedPlaylistId.value = playlist?.id || null;
   mode.value = 'playlists';
   searchQuery.value = '';
-  props.onNavigate({
+  navigateMusic({
     mode: 'playlists',
     playlistId: selectedPlaylistId.value,
-    albumKey: null,
-    artist: null,
   });
 }
 
@@ -663,7 +745,7 @@ function selectMode(value) {
   }
   albumTracks.value = [];
   artistTracks.value = [];
-  props.onNavigate({ mode: value, albumKey: null, artist: null, playlistId: null });
+  navigateMusic({ mode: value });
   if (value === 'songs') {
     loadTracks({ reset: true });
   } else if (value === 'albums') {
@@ -753,14 +835,74 @@ function markArtistAlbumCoverError(album) {
   artistAlbumCoverErrors.value = new Set([...artistAlbumCoverErrors.value, key]);
 }
 
-function handlePinClear() {
-  clearPin();
+async function openPinnedAlbum(pin) {
+  if (!pin?.albumKey) {
+    return;
+  }
+  if (!albums.value.length) {
+    await loadAlbums({ reset: true });
+  }
+  const foundAlbum =
+    albums.value.find((album) => album.albumKey === pin.albumKey) || {
+      albumKey: pin.albumKey,
+      album: pin.label || 'Album',
+      artist: pin.artist || 'Unknown Artist',
+    };
+  await selectAlbum(foundAlbum);
+}
+
+async function handlePinSelect(pin) {
+  if (!pin) {
+    closeSidebar();
+    return;
+  }
+  selectPin(pin);
+  if (pin.albumKey) {
+    searchQuery.value = '';
+    clearTrackSelection();
+    await openPinnedAlbum(pin);
+    closeSidebar();
+    return;
+  }
+  searchQuery.value = '';
+  navigateMusic({ mode: 'songs' });
   closeSidebar();
 }
 
-function handlePinSelect(pin) {
-  selectPin(pin);
-  closeSidebar();
+function openSidebarPlaylistMenu(event, playlist) {
+  closeContextMenu();
+  closeAlbumMenu();
+  openSidebarMenuBase(event, { kind: 'playlist', playlist, pin: null });
+}
+
+function openSidebarPinMenu(event, pin) {
+  closeContextMenu();
+  closeAlbumMenu();
+  openSidebarMenuBase(event, { kind: 'pin', pin, playlist: null });
+}
+
+function removeSidebarPlaylist(playlist) {
+  if (!playlist?.id) {
+    return;
+  }
+  const removingId = playlist.id;
+  removePlaylistEntry(removingId);
+  if (selectedPlaylistId.value === removingId) {
+    selectedPlaylistId.value = null;
+    if (mode.value === 'playlists') {
+      navigateMusic({ mode: 'playlists' });
+    }
+  }
+  persistPlaylists();
+  closeSidebarMenu();
+}
+
+function removeQuickAccess(pin) {
+  if (!pin?.id) {
+    return;
+  }
+  removePin(pin.id);
+  closeSidebarMenu();
 }
 
 function openContextMenu(event, track) {
@@ -862,7 +1004,7 @@ async function fetchAlbumTracksByKey(key) {
   const result = await listAlbumTracks({
     rootId: props.currentRoot.id,
     key,
-    pathPrefix: activePinPath.value || undefined,
+    pathPrefix: activeLibraryPathPrefix.value || undefined,
   });
   if (!result.ok) {
     return [];
@@ -930,11 +1072,11 @@ function clearPlaylist() {
     return;
   }
   const removingId = selectedPlaylist.value.id;
-  playlists.value = playlists.value.filter((playlist) => playlist.id !== removingId);
+  removePlaylistEntry(removingId);
   if (selectedPlaylistId.value === removingId) {
     selectedPlaylistId.value = null;
   }
-  props.onNavigate({ mode: 'playlists', playlistId: null, albumKey: null, artist: null });
+  navigateMusic({ mode: 'playlists' });
   persistPlaylists();
 }
 
@@ -950,8 +1092,43 @@ function addPinForTrack(track) {
   if (!track?.path) {
     return;
   }
-  addPinForItemPath(track.path);
+  const trackRootId = resolveTrackRootId(track);
+  if (track.albumKey) {
+    addPinForItemPath(track.path, {
+      rootId: trackRootId,
+      label: trackAlbum(track),
+      meta: {
+        kind: 'album',
+        albumKey: track.albumKey,
+        artist: trackArtist(track),
+      },
+    });
+  } else {
+    addPinForItemPath(track.path, {
+      rootId: trackRootId,
+      meta: { kind: 'path' },
+    });
+  }
   closeContextMenu();
+}
+
+function addPinForAlbum(album) {
+  if (!album?.albumKey) {
+    return;
+  }
+  const albumRootId =
+    props.currentRoot?.id && props.currentRoot.id !== ALL_ROOTS_ID ? props.currentRoot.id : rootId.value;
+  addPinForItemPath(`${album.albumKey}/track`, {
+    rootId: albumRootId || '',
+    label: album.album || 'Album',
+    meta: {
+      kind: 'album',
+      albumKey: album.albumKey,
+      artist: album.artist || 'Unknown Artist',
+      coverKey: album.coverKey || null,
+    },
+  });
+  closeAlbumMenu();
 }
 
 useDebouncedWatch(searchQuery, () => {
@@ -968,7 +1145,7 @@ useDebouncedWatch(searchQuery, () => {
   }
 });
 
-watch(activePin, () => {
+watch(activeLibraryPathPrefix, () => {
   clearTrackSelection();
   searchQuery.value = '';
   if (mode.value === 'songs') {
@@ -991,6 +1168,14 @@ watch(activePin, () => {
     loadArtists({ reset: true });
   }
 });
+
+watch(
+  browserTitle,
+  (value) => {
+    props.onTitleChange?.(value);
+  },
+  { immediate: true }
+);
 
 watch(
   () => props.currentRoot,
@@ -1038,7 +1223,7 @@ watch(
       clearPin();
     }
   },
-  { deep: true }
+  { deep: true, immediate: true }
 );
 
 watch(
@@ -1061,6 +1246,22 @@ onMounted(() => {
   loadPlaylists();
   loadPins();
   applyNavState();
+  nextTick(() => {
+    updateMusicPlayerOverlayMetrics();
+    window.addEventListener('resize', updateMusicPlayerOverlayMetrics);
+    if (typeof ResizeObserver !== 'undefined' && musicBrowserShell.value) {
+      musicBrowserObserver = new ResizeObserver(() => {
+        updateMusicPlayerOverlayMetrics();
+      });
+      musicBrowserObserver.observe(musicBrowserShell.value);
+    }
+  });
+});
+
+onUnmounted(() => {
+  window.removeEventListener('resize', updateMusicPlayerOverlayMetrics);
+  musicBrowserObserver?.disconnect();
+  musicBrowserObserver = null;
 });
 </script>
 
@@ -1093,25 +1294,20 @@ onMounted(() => {
           :active="selectedPlaylistId === playlist.id"
           :count="playlist.tracks.length"
           @click="handleSelectPlaylist(playlist)"
+          @contextmenu="openSidebarPlaylistMenu($event, playlist)"
         >
           {{ playlist.name }}
         </SidebarNavItem>
         <div v-if="!playlists.length" class="sidebar-hint">Right-click a track to add.</div>
       </SidebarSection>
-      <SidebarSection title="Pinned">
-        <SidebarNavItem
-          icon="fa-regular fa-bookmark"
-          :active="!activePin"
-          @click="handlePinClear"
-        >
-          All locations
-        </SidebarNavItem>
+      <SidebarSection title="Quick Access">
         <SidebarNavItem
           v-for="pin in musicPins"
           :key="pin.id"
-          icon="fa-solid fa-location-dot"
+          :icon="pin.albumKey ? 'fa-solid fa-compact-disc' : 'fa-solid fa-location-dot'"
           :active="activePin?.id === pin.id"
           @click="handlePinSelect(pin)"
+          @contextmenu="openSidebarPinMenu($event, pin)"
         >
           {{ pin.label }}
         </SidebarNavItem>
@@ -1120,7 +1316,7 @@ onMounted(() => {
     </AppSidebar>
     <div class="sidebar-scrim" @click="closeSidebar"></div>
 
-    <main class="browser music-browser">
+    <main ref="musicBrowserShell" class="browser music-browser">
       <ViewToolbar>
         <template #title>
           <div class="toolbar-line">
@@ -1439,7 +1635,10 @@ onMounted(() => {
         <div ref="sentinel" class="scroll-sentinel"></div>
       </ViewScrollArea>
 
-      <div class="music-player-overlay">
+    </main>
+
+    <Teleport to="body">
+      <div class="music-player-overlay" :style="musicPlayerOverlayStyle">
         <MiniPlayer
           class="music-floating-player"
           :tracks="queue"
@@ -1449,7 +1648,30 @@ onMounted(() => {
           @select="selectTrack"
         />
       </div>
-    </main>
+    </Teleport>
+
+    <div
+      v-if="sidebarMenu.open"
+      class="context-menu"
+      :style="{ top: `${sidebarMenu.y}px`, left: `${sidebarMenu.x}px` }"
+    >
+      <button
+        v-if="sidebarMenu.kind === 'playlist'"
+        class="context-menu-item danger"
+        @click="removeSidebarPlaylist(sidebarMenu.playlist)"
+      >
+        <i class="fa-solid fa-trash"></i>
+        Remove playlist
+      </button>
+      <button
+        v-if="sidebarMenu.kind === 'pin'"
+        class="context-menu-item danger"
+        @click="removeQuickAccess(sidebarMenu.pin)"
+      >
+        <i class="fa-solid fa-trash"></i>
+        Remove quick access
+      </button>
+    </div>
 
     <div
       v-if="contextMenu.open"
@@ -1474,7 +1696,7 @@ onMounted(() => {
       </button>
       <button class="context-menu-item" @click="addPinForTrack(contextMenu.track)">
         <i class="fa-regular fa-bookmark"></i>
-        Pin location
+        Pin quick access
       </button>
       <button class="context-menu-item" @click="handleOpenInFiles(contextMenu.track)">
         <i class="fa-solid fa-folder-open"></i>
@@ -1491,6 +1713,10 @@ onMounted(() => {
       class="context-menu"
       :style="{ top: `${albumMenu.y}px`, left: `${albumMenu.x}px` }"
     >
+      <button class="context-menu-item" @click="addPinForAlbum(albumMenu.album)">
+        <i class="fa-regular fa-bookmark"></i>
+        Pin quick access
+      </button>
       <button class="context-menu-item" @click="addAlbumToPlaylist(albumMenu.album)">
         <i class="fa-solid fa-plus"></i>
         Add to playlist

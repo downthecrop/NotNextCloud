@@ -19,17 +19,27 @@ export function usePinnedLocations({ storageKey }) {
     pins.value = readJsonArray(storageKey);
   }
 
-  function addPinPath(pathValue, { idPrefix = 'pin' } = {}) {
+  function addPinPath(pathValue, { idPrefix = 'pin', rootId = '', label = '', meta = {} } = {}) {
     const normalized = normalizePath(pathValue);
-    if (pins.value.some((pin) => pin.path === normalized)) {
+    const normalizedRootId = typeof rootId === 'string' ? rootId : '';
+    const albumKey = typeof meta?.albumKey === 'string' ? meta.albumKey : '';
+    if (
+      pins.value.some((pin) =>
+        albumKey
+          ? pin.albumKey === albumKey && (pin.rootId || '') === normalizedRootId
+          : pin.path === normalized && (pin.rootId || '') === normalizedRootId
+      )
+    ) {
       return false;
     }
     pins.value = [
       ...pins.value,
       {
         id: `${idPrefix}-${Date.now()}`,
+        rootId: normalizedRootId,
         path: normalized,
-        label: pinLabel(normalized),
+        label: label || pinLabel(normalized),
+        ...meta,
       },
     ];
     persistPins();
@@ -50,6 +60,7 @@ export function usePinnedLocations({ storageKey }) {
       id: `${idPrefix}-${token}`,
       path: normalized,
       label: pinLabel(normalized),
+      kind: 'path',
     };
     activePin.value = next;
     return next;
@@ -57,6 +68,17 @@ export function usePinnedLocations({ storageKey }) {
 
   function selectPin(pin) {
     activePin.value = pin || null;
+  }
+
+  function removePin(pinId) {
+    if (!pinId) {
+      return;
+    }
+    pins.value = pins.value.filter((pin) => pin.id !== pinId);
+    if (activePin.value?.id === pinId) {
+      activePin.value = null;
+    }
+    persistPins();
   }
 
   function clearPin() {
@@ -73,6 +95,7 @@ export function usePinnedLocations({ storageKey }) {
     addPinForItemPath,
     setActivePinFromPath,
     selectPin,
+    removePin,
     clearPin,
   };
 }

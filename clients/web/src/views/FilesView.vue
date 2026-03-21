@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch } from 'vue';
+import { ref, computed, watch, onMounted } from 'vue';
 import { useApi } from '../composables/useApi';
 import { useDownloads } from '../composables/useDownloads';
 import { useImageErrors } from '../composables/useImageErrors';
@@ -13,6 +13,7 @@ import { useSort } from '../composables/useSort';
 import { useTrashApi } from '../composables/useTrashApi';
 import { useDebouncedWatch } from '../composables/useDebouncedWatch';
 import { useFileUploads } from '../composables/useFileUploads';
+import { usePinnedLocations } from '../composables/usePinnedLocations';
 import AppSidebar from '../components/AppSidebar.vue';
 import MiniPlayer from '../components/MiniPlayer.vue';
 import SidebarNavItem from '../components/SidebarNavItem.vue';
@@ -115,9 +116,23 @@ const {
   openMenu: openItemMenuBase,
   closeMenu: closeItemMenu,
 } = useMenu({ item: null });
+const {
+  menu: sidebarPinMenu,
+  openMenu: openSidebarPinMenuBase,
+  closeMenu: closeSidebarPinMenu,
+} = useMenu({ pin: null });
 const lastNavToken = ref(0);
 const pendingOpen = ref(null);
-useGlobalMenuClose([closeBreadcrumbMenu, closeItemMenu]);
+useGlobalMenuClose([closeBreadcrumbMenu, closeItemMenu, closeSidebarPinMenu]);
+const {
+  pins: filePins,
+  activePin: activeFilePin,
+  loadPins: loadFilePins,
+  addPinPath: addFilePinPath,
+  selectPin: selectFilePin,
+  removePin: removeFilePin,
+  clearPin: clearFilePin,
+} = usePinnedLocations({ storageKey: 'localCloudFilePins' });
 
 const rootId = computed(() => props.currentRoot?.id || '');
 const isAllRoot = computed(() => props.currentRoot?.id === ALL_ROOTS_ID);
@@ -343,10 +358,17 @@ function openBreadcrumbMenu(event, crumb, index) {
 function openItemMenu(event, item) {
   event.preventDefault();
   closeBreadcrumbMenu();
+  closeSidebarPinMenu();
   if (!isSelected(item)) {
     setSingleSelection(item);
   }
   openItemMenuBase(event, { item });
+}
+
+function openSidebarPinMenu(event, pin) {
+  closeBreadcrumbMenu();
+  closeItemMenu();
+  openSidebarPinMenuBase(event, { pin });
 }
 
 function handleItemDownload(item) {
@@ -370,6 +392,14 @@ function handleItemDownload(item) {
       filename: item.name || 'download',
     });
   }
+  closeItemMenu();
+}
+
+function handlePinFolder(item) {
+  if (isTrashView.value || !item?.isDir || !item?.path) {
+    return;
+  }
+  addFilePinPath(item.path, { rootId: itemRootId(item) });
   closeItemMenu();
 }
 
@@ -501,6 +531,44 @@ function handleRootSelect(root) {
   closeSidebar();
 }
 
+async function handleFilePinSelect(pin) {
+  if (!pin?.path) {
+    closeSidebar();
+    return;
+  }
+  const targetRootId = pin.rootId || rootId.value;
+  if (!targetRootId || targetRootId === ALL_ROOTS_ID) {
+    closeSidebar();
+    return;
+  }
+  const wasTrash = isTrashView.value;
+  isTrashView.value = false;
+  searchQuery.value = '';
+  modalItem.value = null;
+  modalOpen.value = false;
+  resetUploadState();
+  clearSelection();
+  if (targetRootId !== rootId.value) {
+    const targetRoot = props.roots.find((root) => root.id === targetRootId);
+    if (targetRoot) {
+      pendingOpen.value = { path: pin.path, rootId: targetRootId };
+      props.onSelectRoot(targetRoot);
+    }
+    needsFilesRefresh.value = wasTrash;
+    closeSidebar();
+    return;
+  }
+  currentPath.value = pin.path;
+  props.onNavigatePath?.({ rootId: targetRootId, path: pin.path });
+  await loadList({ reset: true });
+  closeSidebar();
+}
+
+function removeQuickAccessPin(pin) {
+  removeFilePin(pin?.id);
+  closeSidebarPinMenu();
+}
+
 function rowAnimationStyle(index) {
   if (!Number.isFinite(index) || index < 0 || index > 24) {
     return null;
@@ -519,6 +587,18 @@ async function openTrash() {
   clearSelection();
   await loadTrash({ reset: true });
   closeSidebar();
+}
+
+function syncActiveQuickAccessPin() {
+  if (isTrashView.value) {
+    clearFilePin();
+    return;
+  }
+  const match =
+    filePins.value.find(
+      (pin) => pin.path === currentPath.value && (pin.rootId || '') === rootId.value
+    ) || null;
+  selectFilePin(match);
 }
 
 function iconClass(item) {
@@ -869,6 +949,18 @@ watch(
     }
   }
 );
+
+watch(
+  [currentPath, rootId, isTrashView, filePins],
+  () => {
+    syncActiveQuickAccessPin();
+  },
+  { immediate: true, deep: true }
+);
+
+onMounted(() => {
+  loadFilePins();
+});
 </script>
 
 <template>
@@ -893,6 +985,19 @@ watch(
         >
           Recycle Bin
         </SidebarNavItem>
+      </SidebarSection>
+      <SidebarSection title="Quick Access">
+        <SidebarNavItem
+          v-for="pin in filePins"
+          :key="pin.id"
+          icon="fa-solid fa-folder-open"
+          :active="activeFilePin?.id === pin.id"
+          @click="handleFilePinSelect(pin)"
+          @contextmenu="openSidebarPinMenu($event, pin)"
+        >
+          {{ pin.label }}
+        </SidebarNavItem>
+        <div v-if="!filePins.length" class="sidebar-hint">Right-click a folder to pin it.</div>
       </SidebarSection>
     </AppSidebar>
     <div class="sidebar-scrim" @click="closeSidebar"></div>
@@ -1288,6 +1393,14 @@ watch(
       Open in Photos
     </button>
     <button
+      v-if="!isTrashView && itemMenu.item?.isDir"
+      class="context-menu-item"
+      @click="handlePinFolder(itemMenu.item)"
+    >
+      <i class="fa-regular fa-bookmark"></i>
+      Pin quick access
+    </button>
+    <button
       v-if="!isTrashView && selectionCount > 1"
       class="context-menu-item"
       @click="handleDownloadSelection"
@@ -1310,6 +1423,17 @@ watch(
     >
       <i class="fa-solid fa-trash"></i>
       Delete
+    </button>
+  </div>
+
+  <div
+    v-if="sidebarPinMenu.open"
+    class="context-menu"
+    :style="{ top: `${sidebarPinMenu.y}px`, left: `${sidebarPinMenu.x}px` }"
+  >
+    <button class="context-menu-item danger" @click="removeQuickAccessPin(sidebarPinMenu.pin)">
+      <i class="fa-solid fa-trash"></i>
+      Remove quick access
     </button>
   </div>
 </template>

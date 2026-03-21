@@ -21,6 +21,7 @@ const musicNav = ref({ mode: 'songs', albumKey: null, artist: null, playlistId: 
 const filesNav = ref({ rootId: null, path: '', token: 0 });
 const musicJump = ref({ rootId: null, path: '', token: 0 });
 const photosJump = ref({ rootId: null, path: '', token: 0 });
+const musicDocumentTitle = ref('Music · Local Cloud');
 const settingsOpen = ref(false);
 let statusTimer = null;
 const pageSize = ref(readPositiveInt('localCloudPageSize', 50));
@@ -54,6 +55,23 @@ const uploadEnabled = computed(() => apiInfo.value?.capabilities?.upload?.enable
 const uploadChunkBytes = computed(
   () => apiInfo.value?.capabilities?.upload?.chunkBytes || 8 * 1024 * 1024
 );
+const documentTitle = computed(() => {
+  if (!isAuthenticated.value) {
+    return 'Local Cloud';
+  }
+  if (currentView.value === 'music') {
+    return musicDocumentTitle.value || 'Music · Local Cloud';
+  }
+  if (currentView.value === 'photos') {
+    return 'Photos · Local Cloud';
+  }
+  const pathParts = typeof filesNav.value?.path === 'string' ? filesNav.value.path.split('/').filter(Boolean) : [];
+  const currentLabel =
+    pathParts[pathParts.length - 1] ||
+    (currentRoot.value?.id === ALL_ROOTS_ID ? 'All roots' : currentRoot.value?.name) ||
+    'Files';
+  return `${currentLabel} · Files · Local Cloud`;
+});
 
 function setToken(value) {
   token.value = value || '';
@@ -76,6 +94,10 @@ const apiUrls = apiClient.urls;
 function setUploadOverwrite(value) {
   uploadOverwrite.value = Boolean(value);
   writeBoolean('localCloudUploadOverwrite', uploadOverwrite.value);
+}
+
+function setMusicDocumentTitle(value) {
+  musicDocumentTitle.value = value || 'Music · Local Cloud';
 }
 
 provide('apiClient', apiClient);
@@ -427,6 +449,14 @@ watch(
   }
 );
 
+watch(
+  documentTitle,
+  (value) => {
+    document.title = value;
+  },
+  { immediate: true }
+);
+
 watch(currentView, (view) => {
   if (view !== 'photos' && photosJump.value.path) {
     photosJump.value = { rootId: null, path: '', token: 0 };
@@ -576,6 +606,7 @@ watch(
       :on-open-in-files="openInFiles"
       :nav-state="musicNav"
       :on-navigate="updateMusicNav"
+      :on-title-change="setMusicDocumentTitle"
     />
 
     <SettingsModal

@@ -22,7 +22,7 @@ import { formatDate, formatSize } from '../utils/formatting';
 import { itemKey as buildItemKey } from '../utils/itemKey';
 import { isImage, isVideo } from '../utils/media';
 import { hasMoreFromTotalOrCursor, loadPaged, resetPagedState } from '../utils/pagination';
-import { parentPath } from '../utils/pathing';
+import { parentPath, pathLabel } from '../utils/pathing';
 import { ALL_ROOTS_ID } from '../constants';
 
 const props = defineProps({
@@ -79,6 +79,7 @@ const {
   loadEntries: loadAlbums,
   persistEntries: persistAlbums,
   ensureDraftEntry: ensureDraftAlbum,
+  removeEntry: removeAlbumEntry,
 } = useDraftCollection({
   storageKey: 'localCloudPhotoAlbums',
   counterKey: 'localCloudPhotoAlbumCounter',
@@ -110,8 +111,13 @@ const {
   openMenu: openContextMenuBase,
   closeMenu: closeContextMenu,
 } = useMenu({ item: null });
+const {
+  menu: sidebarMenu,
+  openMenu: openSidebarMenuBase,
+  closeMenu: closeSidebarMenu,
+} = useMenu({ kind: '', album: null, pin: null });
 const { sidebarOpen, toggleSidebar, closeSidebar } = useSidebar();
-useGlobalMenuClose(closeContextMenu);
+useGlobalMenuClose([closeContextMenu, closeSidebarMenu]);
 const {
   pins: photoPins,
   activePin,
@@ -120,8 +126,11 @@ const {
   addPinForItemPath,
   setActivePinFromPath,
   selectPin,
+  removePin,
   clearPin,
 } = usePinnedLocations({ storageKey: 'localCloudPhotoPins' });
+const pendingPinSelection = ref(null);
+const selectedPinnedAlbum = ref(null);
 
 const rootId = computed(() => props.currentRoot?.id || '');
 const browserScrollRoot = computed(() => browserScroll.value?.scrollEl || null);
@@ -146,8 +155,17 @@ const displayItems = computed(() => (isSearchMode.value ? searchResults.value : 
 const selectedAlbum = computed(
   () => albums.value.find((album) => album.id === selectedAlbumId.value) || null
 );
-const isAlbumDetail = computed(() => Boolean(selectedAlbum.value));
-const albumItems = computed(() => selectedAlbum.value?.items || []);
+const activeCollection = computed(() => selectedAlbum.value || selectedPinnedAlbum.value);
+const isAlbumDetail = computed(() => Boolean(activeCollection.value));
+const albumItems = computed(() => {
+  if (selectedAlbum.value) {
+    return selectedAlbum.value.items || [];
+  }
+  if (selectedPinnedAlbum.value) {
+    return displayItems.value;
+  }
+  return [];
+});
 const sortLabel = computed(() => (sortDir.value === 'desc' ? 'Newest' : 'Oldest'));
 const visiblePhotoCount = computed(
   () => items.value.length + photoHeadBuffer.value.length + photoTailBuffer.value.length
@@ -155,6 +173,15 @@ const visiblePhotoCount = computed(
 const visibleSearchCount = computed(
   () => searchResults.value.length + searchHeadBuffer.value.length + searchTailBuffer.value.length
 );
+const photoQueryRootId = computed(() => {
+  if (selectedPinnedAlbum.value?.rootId) {
+    return selectedPinnedAlbum.value.rootId;
+  }
+  if (jumpTarget.value?.rootId && props.currentRoot?.id === ALL_ROOTS_ID) {
+    return jumpTarget.value.rootId;
+  }
+  return props.currentRoot?.id || '';
+});
 const hasMore = computed(() => {
   if (isAlbumDetail.value) {
     return false;
@@ -349,7 +376,7 @@ function clearAlbum() {
     return;
   }
   const removingId = selectedAlbum.value.id;
-  albums.value = albums.value.filter((album) => album.id !== removingId);
+  removeAlbumEntry(removingId);
   if (selectedAlbumId.value === removingId) {
     selectedAlbumId.value = null;
   }
@@ -368,40 +395,106 @@ function addPinForItem(item) {
   if (!item?.path) {
     return;
   }
-  addPinForItemPath(item.path);
+  addPinForItemPath(item.path, {
+    rootId: itemRootId(item),
+    label: pathLabel(parentPath(item.path), 'Pinned album'),
+    meta: {
+      kind: 'album',
+    },
+  });
   closeContextMenu();
+}
+
+function buildPinnedAlbum(pin) {
+  if (!pin?.path) {
+    return null;
+  }
+  return {
+    id: pin.id,
+    name: pin.label || pathLabel(pin.path, 'Pinned album'),
+    path: pin.path,
+    rootId: pin.rootId || '',
+    isPinned: true,
+  };
 }
 
 function handleAlbumClear() {
   clearAlbumSelection();
+  selectedPinnedAlbum.value = null;
+  pendingPinSelection.value = null;
+  clearPin();
   closeSidebar();
 }
 
 function handleCreateAlbum() {
+  selectedPinnedAlbum.value = null;
   selectAlbum(ensureDraftAlbum());
   closeSidebar();
 }
 
 function handleAlbumSelect(album) {
+  selectedPinnedAlbum.value = null;
+  pendingPinSelection.value = null;
+  clearPin();
   selectAlbum(album);
   closeSidebar();
 }
 
-function handlePinClear() {
+async function handlePinClear() {
+  selectedPinnedAlbum.value = null;
+  pendingPinSelection.value = null;
+  selectedAlbumId.value = null;
+  searchQuery.value = '';
   clearPin();
+  await loadPhotos({ reset: true });
   closeSidebar();
 }
 
-function handlePinSelect(pin) {
+async function applyPhotoPinSelection(pin) {
+  if (!pin?.path) {
+    return;
+  }
+  selectedPinnedAlbum.value = buildPinnedAlbum(pin);
   selectPin(pin);
+  selectedAlbumId.value = null;
+  searchQuery.value = '';
+  await loadPhotos({ reset: true });
+}
+
+async function handlePinSelect(pin) {
+  if (!pin?.path) {
+    closeSidebar();
+    return;
+  }
+  pendingPinSelection.value = null;
+  await applyPhotoPinSelection(pin);
   closeSidebar();
+}
+
+async function clearDetailSelection() {
+  if (selectedAlbum.value) {
+    clearAlbumSelection();
+    return;
+  }
+  await handlePinClear();
 }
 
 function openContextMenu(event, item) {
   if (!isSelected(item)) {
     setSingleSelection(item);
   }
+  closeSidebarMenu();
   openContextMenuBase(event, { item });
+}
+
+function openSidebarAlbumMenu(event, album) {
+  closeContextMenu();
+  openSidebarMenuBase(event, { kind: 'album', album, pin: null });
+}
+
+function openSidebarPinMenu(event, pin) {
+  closeContextMenu();
+  openSidebarMenuBase(event, { kind: 'pin', album: null, pin });
 }
 
 async function downloadSelection(items, label) {
@@ -423,7 +516,7 @@ async function handleDownloadSelection() {
   if (!selected.length) {
     return;
   }
-  const label = isAlbumDetail.value ? selectedAlbum.value?.name || 'album' : 'photos';
+  const label = isAlbumDetail.value ? activeCollection.value?.name || 'album' : 'photos';
   await downloadSelection(selected, label);
   closeContextMenu();
 }
@@ -432,7 +525,35 @@ async function handleDownloadAlbum() {
   if (!sortedAlbumItems.value.length) {
     return;
   }
-  await downloadSelection(sortedAlbumItems.value, selectedAlbum.value?.name || 'album');
+  await downloadSelection(sortedAlbumItems.value, activeCollection.value?.name || 'album');
+}
+
+function removeSidebarAlbum(album) {
+  const albumId = album?.id || '';
+  if (!albumId) {
+    return;
+  }
+  removeAlbumEntry(albumId);
+  if (selectedAlbumId.value === albumId) {
+    selectedAlbumId.value = null;
+  }
+  persistAlbums();
+  closeSidebarMenu();
+}
+
+async function removeQuickAccess(pin) {
+  const pinId = pin?.id || '';
+  if (!pinId) {
+    return;
+  }
+  const wasActive = activePin.value?.id === pinId;
+  removePin(pinId);
+  if (wasActive) {
+    selectedPinnedAlbum.value = null;
+    selectedAlbumId.value = null;
+    await loadPhotos({ reset: true });
+  }
+  closeSidebarMenu();
 }
 
 function handleOpenInFiles(item) {
@@ -739,11 +860,11 @@ function handleWindowWheel(event) {
 }
 
 async function loadPhotos({ reset = true } = {}) {
-  if (!props.currentRoot) {
+  if (!photoQueryRootId.value) {
     return;
   }
   const requestKey = [
-    props.currentRoot.id,
+    photoQueryRootId.value,
     props.pageSize,
     activePinPath.value || '',
     reset ? 'reset' : 'append',
@@ -769,7 +890,7 @@ async function loadPhotos({ reset = true } = {}) {
     requestVersion,
     fetchPage: ({ offset: pageOffset, cursor: pageCursor }) =>
       listMedia({
-        rootId: props.currentRoot.id,
+        rootId: photoQueryRootId.value,
         type: 'photos',
         limit: props.pageSize,
         offset: pageOffset,
@@ -793,7 +914,7 @@ async function loadPhotos({ reset = true } = {}) {
 }
 
 async function runSearch({ reset = true } = {}) {
-  if (!props.currentRoot) {
+  if (!photoQueryRootId.value) {
     return;
   }
   const query = searchQuery.value.trim();
@@ -814,7 +935,7 @@ async function runSearch({ reset = true } = {}) {
           return searchAbortController.signal;
         })();
   const requestKey = [
-    props.currentRoot.id,
+    photoQueryRootId.value,
     props.pageSize,
     activePinPath.value || '',
     query,
@@ -839,7 +960,7 @@ async function runSearch({ reset = true } = {}) {
     requestVersion,
     fetchPage: ({ offset: pageOffset, cursor: pageCursor }) =>
       searchEntries({
-        rootId: props.currentRoot.id,
+        rootId: photoQueryRootId.value,
         type: 'photos',
         query,
         limit: props.pageSize,
@@ -886,6 +1007,9 @@ const { sentinel } = useInfiniteScroll(loadMore, {
 useDebouncedWatch(searchQuery, () => runSearch({ reset: true }));
 
 watch(activePin, () => {
+  if (selectedAlbumId.value || selectedPinnedAlbum.value) {
+    return;
+  }
   searchQuery.value = '';
   loadPhotos({ reset: true });
 });
@@ -898,7 +1022,14 @@ watch(
     modalOpen.value = false;
     resetImageErrors();
     selectedAlbumId.value = null;
-    activePin.value = null;
+    if (pendingPinSelection.value) {
+      selectPin(pendingPinSelection.value);
+      selectedPinnedAlbum.value = buildPinnedAlbum(pendingPinSelection.value);
+      pendingPinSelection.value = null;
+    } else {
+      selectedPinnedAlbum.value = null;
+      clearPin();
+    }
     loadPhotos({ reset: true });
   },
   { immediate: true }
@@ -1002,7 +1133,7 @@ watch(
   <section class="layout layout-wide photos-layout" :class="{ 'sidebar-open': sidebarOpen }">
     <AppSidebar title="Photos">
       <SidebarSection title="Albums">
-        <SidebarNavItem icon="fa-regular fa-images" :active="!selectedAlbumId" @click="handleAlbumClear">
+        <SidebarNavItem icon="fa-regular fa-images" :active="!activeCollection" @click="handleAlbumClear">
           All photos
         </SidebarNavItem>
         <SidebarNavItem icon="fa-solid fa-plus" @click="handleCreateAlbum">
@@ -1015,21 +1146,20 @@ watch(
           :active="selectedAlbumId === album.id"
           :count="album.items.length"
           @click="handleAlbumSelect(album)"
+          @contextmenu="openSidebarAlbumMenu($event, album)"
         >
           {{ album.name }}
         </SidebarNavItem>
         <div v-if="!albums.length" class="sidebar-hint">Add photos to start an album.</div>
       </SidebarSection>
-      <SidebarSection title="Pinned">
-        <SidebarNavItem icon="fa-regular fa-bookmark" :active="!activePin" @click="handlePinClear">
-          All locations
-        </SidebarNavItem>
+      <SidebarSection title="Quick Access">
         <SidebarNavItem
           v-for="pin in photoPins"
           :key="pin.id"
-          icon="fa-solid fa-location-dot"
+          icon="fa-solid fa-photo-film"
           :active="activePin?.id === pin.id"
           @click="handlePinSelect(pin)"
+          @contextmenu="openSidebarPinMenu($event, pin)"
         >
           {{ pin.label }}
         </SidebarNavItem>
@@ -1045,12 +1175,12 @@ watch(
             <button class="icon-btn sidebar-toggle" @click="toggleSidebar" aria-label="Toggle sidebar">
               <i class="fa-solid fa-bars"></i>
             </button>
-            <button v-if="selectedAlbum" class="action-btn secondary" @click="clearAlbumSelection">
+            <button v-if="activeCollection" class="action-btn secondary" @click="clearDetailSelection">
               <i class="fa-solid fa-arrow-left"></i>
               Back
             </button>
-            <strong>{{ selectedAlbum ? selectedAlbum.name : 'Photos' }}</strong>
-            <span class="meta" v-if="selectedAlbum"> - {{ albumItems.length }} items</span>
+            <strong>{{ activeCollection ? activeCollection.name : 'Photos' }}</strong>
+            <span class="meta" v-if="activeCollection"> - {{ albumItems.length }} items</span>
             <span class="meta" v-else>
               - {{ photosMeta }}
             </span>
@@ -1058,7 +1188,7 @@ watch(
         </template>
         <template #actions>
           <input
-            v-if="!selectedAlbum"
+            v-if="!activeCollection"
             class="search"
             type="search"
             placeholder="Search photos and videos"
@@ -1090,7 +1220,7 @@ watch(
           Add photos or videos to your storage root to see the timeline.
         </div>
 
-        <div v-else-if="!selectedAlbum" class="timeline">
+        <div v-else-if="!activeCollection" class="timeline">
           <div v-if="canRestoreFromTop" ref="topSentinel" class="scroll-sentinel"></div>
           <div v-for="group in timelineGroups" :key="group.label" class="timeline-group">
             <div class="timeline-label">{{ group.label }}</div>
@@ -1127,13 +1257,18 @@ watch(
         <div v-else class="photo-album-detail">
           <div class="photo-album-header">
             <input
+              v-if="selectedAlbum"
               class="photo-album-name"
               type="text"
               :value="selectedAlbum.name"
               @input="updateAlbumName($event.target.value)"
             />
+            <div v-else class="photo-album-copy">
+              <div class="photo-album-name static">{{ activeCollection?.name }}</div>
+              <div class="meta">{{ activeCollection?.path }}</div>
+            </div>
             <div class="photo-album-actions">
-              <button class="action-btn secondary" @click="saveAlbum">
+              <button v-if="selectedAlbum" class="action-btn secondary" @click="saveAlbum">
                 <i class="fa-solid fa-floppy-disk"></i>
                 Save
               </button>
@@ -1143,9 +1278,9 @@ watch(
                 :disabled="!sortedAlbumItems.length"
               >
                 <i class="fa-solid fa-download"></i>
-                Download album
+                Download {{ selectedAlbum ? 'album' : 'quick access' }}
               </button>
-              <button class="action-btn secondary" @click="clearAlbum">
+              <button v-if="selectedAlbum" class="action-btn secondary" @click="clearAlbum">
                 <i class="fa-solid fa-trash"></i>
                 Clear
               </button>
@@ -1191,6 +1326,29 @@ watch(
   </section>
 
   <div
+    v-if="sidebarMenu.open"
+    class="context-menu"
+    :style="{ top: `${sidebarMenu.y}px`, left: `${sidebarMenu.x}px` }"
+  >
+    <button
+      v-if="sidebarMenu.kind === 'album'"
+      class="context-menu-item danger"
+      @click="removeSidebarAlbum(sidebarMenu.album)"
+    >
+      <i class="fa-solid fa-trash"></i>
+      Remove album
+    </button>
+    <button
+      v-if="sidebarMenu.kind === 'pin'"
+      class="context-menu-item danger"
+      @click="removeQuickAccess(sidebarMenu.pin)"
+    >
+      <i class="fa-solid fa-trash"></i>
+      Remove quick access
+    </button>
+  </div>
+
+  <div
     v-if="contextMenu.open"
     class="context-menu"
     :style="{ top: `${contextMenu.y}px`, left: `${contextMenu.x}px` }"
@@ -1201,7 +1359,7 @@ watch(
     </button>
     <button class="context-menu-item" @click="addPinForItem(contextMenu.item)">
       <i class="fa-regular fa-bookmark"></i>
-      Pin location
+      Pin quick access
     </button>
     <button class="context-menu-item" @click="handleOpenInFiles(contextMenu.item)">
       <i class="fa-solid fa-folder-open"></i>

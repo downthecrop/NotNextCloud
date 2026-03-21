@@ -36,10 +36,23 @@ export function useDraftCollection({
     return draft;
   }
 
+  function removeEntry(entryId) {
+    if (!entryId) {
+      return false;
+    }
+    const nextEntries = entries.value.filter((entry) => entry?.id !== entryId);
+    if (nextEntries.length === entries.value.length) {
+      return false;
+    }
+    entries.value = nextEntries;
+    return true;
+  }
+
   return {
     entries,
     persistEntries,
     loadEntries,
     ensureDraftEntry,
+    removeEntry,
   };
 }

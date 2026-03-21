@@ -22,13 +22,20 @@ const props = defineProps({
   },
 });
 
-const emit = defineEmits(['click']);
+const emit = defineEmits(['click', 'contextmenu']);
 
 function handleClick(event) {
   if (props.disabled) {
     return;
   }
   emit('click', event);
+}
+
+function handleContextMenu(event) {
+  if (props.disabled) {
+    return;
+  }
+  emit('contextmenu', event);
 }
 </script>
 
@@ -40,6 +47,7 @@ function handleClick(event) {
     :disabled="disabled"
     :aria-label="ariaLabel || undefined"
     @click="handleClick"
+    @contextmenu.prevent="handleContextMenu"
   >
     <span v-if="icon" class="icon"><i :class="icon"></i></span>
     <span class="sidebar-label"><slot></slot></span>
