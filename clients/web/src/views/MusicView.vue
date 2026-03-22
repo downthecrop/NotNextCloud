@@ -1278,8 +1278,6 @@ onUnmounted(() => {
         <SidebarNavItem icon="fa-solid fa-user" :active="mode === 'artists'" @click="handleSelectMode('artists')">
           Artists
         </SidebarNavItem>
-      </SidebarSection>
-      <SidebarSection title="Playlists">
         <SidebarNavItem
           icon="fa-solid fa-list"
           :active="mode === 'playlists' && !selectedPlaylistId"
@@ -1287,6 +1285,8 @@ onUnmounted(() => {
         >
           Playlists
         </SidebarNavItem>
+      </SidebarSection>
+      <SidebarSection title="Playlists">
         <SidebarNavItem
           v-for="playlist in playlists"
           :key="playlist.id"
@@ -1444,7 +1444,7 @@ onUnmounted(() => {
         </div>
 
         <div v-if="mode === 'albums' && selectedAlbum" class="album-detail">
-          <div class="album-detail-header">
+          <div class="album-detail-header detail-surface detail-surface-feature">
             <div class="album-detail-art">
               <img
                 v-if="selectedAlbum.coverKey"
@@ -1453,15 +1453,15 @@ onUnmounted(() => {
               />
               <div v-else class="tile-fallback"><i class="fa-solid fa-compact-disc"></i></div>
             </div>
-            <div class="album-detail-info">
-              <div class="album-detail-title">{{ selectedAlbumTitle }}</div>
+            <div class="album-detail-info detail-surface-copy">
+              <div class="album-detail-title detail-surface-title">{{ selectedAlbumTitle }}</div>
               <div class="meta">{{ selectedAlbumArtist }}</div>
               <div v-if="selectedAlbum.releaseDate" class="meta">
                 Released {{ selectedAlbum.releaseDate }}
               </div>
               <div class="meta">{{ albumTrackCount }} tracks</div>
             </div>
-            <div class="album-detail-actions">
+            <div class="album-detail-actions detail-surface-actions">
               <button class="action-btn secondary" @click="addAlbumToPlaylist">
                 <i class="fa-solid fa-plus"></i>
                 Add to playlist
@@ -1516,14 +1516,14 @@ onUnmounted(() => {
         </div>
 
         <div v-if="mode === 'playlists' && selectedPlaylist" class="playlist-detail">
-          <div class="playlist-detail-header">
+          <div class="playlist-detail-header detail-surface">
             <input
-              class="playlist-name-input"
+              class="playlist-name-input detail-surface-input"
               type="text"
               :value="selectedPlaylist.name"
               @input="updatePlaylistName($event.target.value)"
             />
-            <div class="playlist-detail-actions">
+            <div class="playlist-detail-actions detail-surface-actions">
               <button class="action-btn secondary" @click="savePlaylist">
                 <i class="fa-solid fa-floppy-disk"></i>
                 Save
@@ -1580,10 +1580,12 @@ onUnmounted(() => {
         </div>
 
         <div v-if="isArtistDetail" class="artist-detail">
-          <div class="artist-detail-header">
-            <div class="album-detail-title">{{ selectedArtist?.artist || 'Unknown Artist' }}</div>
-            <div class="meta">{{ selectedArtistAlbumCount }} albums</div>
-            <div class="meta">{{ selectedArtistTrackCount }} tracks</div>
+          <div class="artist-detail-header detail-surface">
+            <div class="detail-surface-copy">
+              <div class="album-detail-title detail-surface-title">{{ selectedArtist?.artist || 'Unknown Artist' }}</div>
+              <div class="meta">{{ selectedArtistAlbumCount }} albums</div>
+              <div class="meta">{{ selectedArtistTrackCount }} tracks</div>
+            </div>
           </div>
           <div v-if="selectedArtistAlbums.length" class="artist-detail-albums">
             <div class="sidebar-title">Albums</div>

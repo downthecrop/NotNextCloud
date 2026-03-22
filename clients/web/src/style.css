@@ -1276,29 +1276,94 @@ input::placeholder {
 .photo-album-detail {
   display: grid;
   gap: 16px;
+  padding-top: 8px;
+}
+
+.detail-surface {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 18px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0.05)),
+    rgba(15, 26, 43, 0.56);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), var(--shadow-soft);
+  backdrop-filter: blur(20px) saturate(145%);
+  -webkit-backdrop-filter: blur(20px) saturate(145%);
+  overflow: hidden;
+}
+
+.detail-surface-feature {
+  gap: 14px;
+  margin-top: 8px;
+  padding: 12px 18px 14px;
+}
+
+.detail-surface::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.18), transparent 38%, transparent 68%, rgba(255, 255, 255, 0.08));
+  pointer-events: none;
+}
+
+.detail-surface > * {
+  position: relative;
+  z-index: 1;
+}
+
+.detail-surface-copy {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.detail-surface-title {
+  font-size: clamp(22px, 3vw, 28px);
+  line-height: 1.05;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.detail-surface-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.detail-surface-input {
+  flex: 1;
+  min-width: 0;
+  min-height: 46px;
+  padding: 11px 14px;
+  background: rgba(9, 16, 28, 0.28);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--ink);
+  border-radius: 14px;
+  font-size: 15px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.detail-surface-input:focus-visible {
+  border-color: rgba(143, 210, 255, 0.42);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 0 0 4px rgba(143, 210, 255, 0.16);
 }
 
 .photo-album-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.04)),
-    var(--panel-strong);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  padding: 12px 14px;
+  flex-wrap: wrap;
+  margin-top: 4px;
 }
 
 .photo-album-name {
   flex: 1;
   min-width: 0;
-  background: rgba(16, 26, 40, 0.28);
-  border: 1px solid var(--line);
-  color: var(--ink);
-  padding: 8px 10px;
-  border-radius: var(--radius-xs);
-  font-size: 14px;
 }
 
 .photo-album-copy {
@@ -1314,8 +1379,7 @@ input::placeholder {
 }
 
 .photo-album-actions {
-  display: flex;
-  gap: 8px;
+  flex: 0 0 auto;
 }
 
 .photo-album-grid {
@@ -1329,6 +1393,7 @@ input::placeholder {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 12px;
+  padding-top: 8px;
 }
 
 .photo-folder-card {
@@ -1336,14 +1401,8 @@ input::placeholder {
   gap: 10px;
   padding: 12px;
   text-align: left;
-  border-radius: 18px;
-  border: 1px solid var(--line);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0.04)),
-    var(--panel-strong);
   color: var(--ink);
   cursor: pointer;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
 .photo-folder-cover {
@@ -1351,6 +1410,8 @@ input::placeholder {
   border-radius: 14px;
   overflow: hidden;
   background: rgba(12, 18, 28, 0.52);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
 .photo-folder-cover img {
@@ -1708,14 +1769,47 @@ input::placeholder {
   grid-template-columns: repeat(auto-fill, minmax(160px, 160px));
   gap: 12px;
   justify-content: start;
+  padding-top: 8px;
+}
+
+.album-card,
+.playlist-card,
+.photo-folder-card,
+.artist-row,
+.artist-album-card {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.05)),
+    rgba(16, 27, 43, 0.52);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 14px 28px rgba(8, 16, 30, 0.14);
+}
+
+.album-card::before,
+.playlist-card::before,
+.photo-folder-card::before,
+.artist-row::before,
+.artist-album-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.14), transparent 40%, transparent 70%, rgba(255, 255, 255, 0.05));
+  pointer-events: none;
+}
+
+.album-card:hover,
+.playlist-card:hover,
+.photo-folder-card:hover,
+.artist-row:hover,
+.artist-album-card:hover {
+  transform: translateY(-1px);
+  border-color: var(--line-strong);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 18px 34px rgba(8, 16, 30, 0.18);
 }
 
 .album-card {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.04)),
-    var(--panel-strong);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
   padding: 12px;
   text-align: left;
   cursor: pointer;
@@ -1730,12 +1824,14 @@ input::placeholder {
 }
 
 .album-art {
-  background: #111a2b;
+  background: rgba(10, 16, 28, 0.58);
   border-radius: var(--radius-sm);
   overflow: hidden;
   height: 140px;
   display: grid;
   place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
 .album-art img {
@@ -1750,22 +1846,11 @@ input::placeholder {
 }
 
 .album-detail-header {
-  display: flex;
-  gap: 16px;
   align-items: center;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.04)),
-    var(--panel-strong);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  padding: 16px;
 }
 
 .album-detail-actions {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 10px;
+  flex: 0 0 auto;
 }
 
 .album-detail-art {
@@ -1773,10 +1858,12 @@ input::placeholder {
   height: 96px;
   border-radius: var(--radius-md);
   overflow: hidden;
-  background: var(--panel);
+  background: rgba(10, 16, 28, 0.58);
   display: grid;
   place-items: center;
   flex: 0 0 auto;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
 .album-detail-art img {
@@ -1786,8 +1873,7 @@ input::placeholder {
 }
 
 .album-detail-info {
-  display: grid;
-  gap: 6px;
+  flex: 1;
 }
 
 .album-detail-title {
@@ -1799,14 +1885,10 @@ input::placeholder {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 14px;
+  padding-top: 8px;
 }
 
 .playlist-card {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.04)),
-    var(--panel-strong);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
   padding: 14px;
   text-align: left;
   cursor: pointer;
@@ -1822,34 +1904,19 @@ input::placeholder {
 .playlist-detail {
   display: grid;
   gap: 14px;
+  padding-top: 8px;
 }
 
 .playlist-detail-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.04)),
-    var(--panel-strong);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  padding: 12px 14px;
+  flex-wrap: wrap;
 }
 
 .playlist-name-input {
-  flex: 1;
-  min-width: 0;
-  background: rgba(16, 26, 40, 0.28);
-  border: 1px solid var(--line);
-  color: var(--ink);
-  padding: 8px 10px;
-  border-radius: var(--radius-xs);
-  font-size: 14px;
+  min-width: min(320px, 100%);
 }
 
 .playlist-detail-actions {
-  display: flex;
-  gap: 8px;
+  flex: 0 0 auto;
 }
 
 .album-tracks {
@@ -1908,14 +1975,10 @@ input::placeholder {
 .artist-list {
   display: grid;
   gap: 8px;
+  padding-top: 8px;
 }
 
 .artist-row {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.04)),
-    var(--panel-strong);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
   padding: 12px;
   text-align: left;
   cursor: pointer;
@@ -1935,15 +1998,7 @@ input::placeholder {
 }
 
 .artist-detail-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.04)),
-    var(--panel-strong);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  padding: 12px 14px;
+  align-items: flex-start;
 }
 
 .artist-detail-albums {
@@ -1958,11 +2013,6 @@ input::placeholder {
 }
 
 .artist-album-card {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.04)),
-    var(--panel-strong);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
   padding: 10px 12px;
   display: grid;
   gap: 4px;

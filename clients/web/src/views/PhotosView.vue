@@ -1414,19 +1414,19 @@ watch(
           </div>
         </div>
         <div v-else class="photo-album-detail">
-          <div class="photo-album-header">
+          <div class="photo-album-header detail-surface">
             <input
               v-if="selectedAlbum"
-              class="photo-album-name"
+              class="photo-album-name detail-surface-input"
               type="text"
               :value="selectedAlbum.name"
               @input="updateAlbumName($event.target.value)"
             />
-            <div v-else class="photo-album-copy">
-              <div class="photo-album-name static">{{ activeCollection?.name }}</div>
+            <div v-else class="photo-album-copy detail-surface-copy">
+              <div class="photo-album-name static detail-surface-title">{{ activeCollection?.name }}</div>
               <div class="meta">{{ activeCollection?.path }}</div>
             </div>
-            <div class="photo-album-actions">
+            <div class="photo-album-actions detail-surface-actions">
               <button v-if="selectedAlbum" class="action-btn secondary" @click="saveAlbum">
                 <i class="fa-solid fa-floppy-disk"></i>
                 Save
